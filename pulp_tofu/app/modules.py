@@ -89,7 +89,10 @@ def parse_location(location: str, base: URL) -> ModuleSource:
         raise ModuleSourceError(f"unsupported module getter {getter!r} in {location!r}")
     # encoded=True keeps the path as written: yarl would otherwise fold go-getter's "//"
     # and any "..", which raw_parts then shows as empty and ".." segments.
-    url = URL(address, encoded=True)
+    try:
+        url = URL(address, encoded=True)
+    except ValueError as exc:
+        raise ModuleSourceError(f"module location {location!r} is not a URL") from exc
     if url.scheme != "https" or not url.raw_host:
         raise ModuleSourceError(f"module location {location!r} is not an HTTPS address")
     segments = url.raw_parts[1:]

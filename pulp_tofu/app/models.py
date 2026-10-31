@@ -22,7 +22,7 @@ from pulpcore.plugin.repo_version_utils import remove_duplicates, validate_repo_
 from pulpcore.plugin.util import get_domain, get_domain_pk
 
 from .hashes import Sha256Hex, parse_sha256
-from .protocol import Platform, PlatformKey, ProviderAddress
+from .protocol import Platform, PlatformKey, ProviderAddress, registry_host
 from .signing import Fingerprint, parse_fingerprint
 
 type Policy = Literal["immediate", "on_demand", "streamed"]
@@ -252,9 +252,7 @@ class TofuRemote(Remote):
     @property
     def hostname(self) -> str:
         """The registry hostname as it appears in provider addresses, with a non-443 port."""
-        url = URL(self.url)
-        host = (url.host or "").lower()
-        return f"{host}:{url.explicit_port}" if url.explicit_port not in (None, 443) else host
+        return registry_host(URL(self.url))
 
     @property
     @override

@@ -453,7 +453,14 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
 
     def validate_content_hostname(self, hostname: str) -> str:
         """Store the hostname as OpenTofu compares it."""
-        return normalize_hostname(hostname)
+        if not hostname:
+            return hostname
+        try:
+            return normalize_hostname(hostname)
+        except ValueError as exc:
+            raise serializers.ValidationError(
+                _("Expected a hostname, with a port if not 443.")
+            ) from exc
 
     def validate_keyring(self, keyring: object) -> object:
         """Refuse a keyring the caller cannot see."""

@@ -42,6 +42,8 @@ def test_provider_parts_follow_opentofu_address_rules(value: str, part: bool, ty
         ("pulp.example:8443", "pulp.example:8443"),
         ("Bücher.Example", "bücher.example"),
         ("xn--bcher-kva.example", "bücher.example"),
+        ("[2001:DB8::1]:8443", "[2001:db8::1]:8443"),
+        ("[2001:db8::1]", "[2001:db8::1]"),
     ],
 )
 def test_hostnames_compare_as_opentofu_compares_them(given: str, expected: str) -> None:

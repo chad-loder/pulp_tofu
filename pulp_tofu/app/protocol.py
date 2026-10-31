@@ -96,11 +96,26 @@ def is_module_system(value: str) -> bool:
 def normalize_hostname(value: str) -> str:
     """A registry hostname as OpenTofu's svchost compares hostnames.
 
-    yarl does the work: the host lowercased and in Unicode form, without a ``:443``
-    port.
+    Raises:
+        ValueError: ``value`` is not a host with an optional port.
     """
-    url = URL.build(scheme="https", authority=value.strip())
-    host = url.host or ""
+    return registry_host(URL.build(scheme="https", authority=value.strip()))
+
+
+def registry_host(url: URL) -> str:
+    """The hostname OpenTofu writes in addresses for a registry at ``url``.
+
+    yarl lowercases the host, gives it in Unicode form and drops a default port; an
+    IPv6 address gets back the brackets yarl's ``host`` leaves off.
+
+    Raises:
+        ValueError: ``url`` has no host.
+    """
+    host = url.host
+    if not host:
+        raise ValueError(f"{url} has no host")
+    if ":" in host:
+        host = f"[{host}]"
     return host if url.explicit_port is None else f"{host}:{url.explicit_port}"
 
 
