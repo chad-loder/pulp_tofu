@@ -617,11 +617,26 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
             "the signature and SHA256SUMS, to have the namespace's signing service sign."
         ),
     )
-    artifacts = serializers.DictField(
-        child=platform.RelatedField(view_name="artifacts-detail", queryset=Artifact.objects.all()),
+    # A JSON field, as pulpcore's pulp_labels: DRF's DictField reads nothing from form data.
+    artifacts = serializers.JSONField(
         required=False,
-        help_text=_("The same files as already uploaded artifacts, keyed by release filename."),
+        help_text=_(
+            "The same files as already uploaded artifacts: an object of release filename to "
+            "artifact href."
+        ),
     )
+
+    def validate_artifacts(self, value: object) -> dict[str, Artifact]:
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(_("Expected an object of filename to artifact href."))
+        artifact = platform.RelatedField(
+            view_name="artifacts-detail", queryset=Artifact.objects.all()
+        )
+        artifact.bind("artifacts", self)
+        return {
+            str(name): cast("Artifact", artifact.to_internal_value(href))
+            for name, href in cast("dict[object, object]", value).items()
+        }
 
     @override
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:

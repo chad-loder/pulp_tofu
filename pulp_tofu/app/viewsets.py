@@ -12,7 +12,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import mixins
 from rest_framework.decorators import action
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
-from rest_framework.parsers import JSONParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 
 from pulpcore.plugin import viewsets as core
@@ -360,7 +360,7 @@ class TofuNamespaceViewSet(
         detail=True,
         methods=["post"],
         serializer_class=serializers.ProviderReleaseSerializer,
-        parser_classes=[MultiPartParser, JSONParser],
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
         # A release job may authenticate with a registry token.
         authentication_classes=registry_authentication_classes(),
     )
@@ -427,7 +427,7 @@ class TofuNamespaceViewSet(
         detail=True,
         methods=["post"],
         serializer_class=serializers.ModuleReleaseSerializer,
-        parser_classes=[MultiPartParser, JSONParser],
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
         authentication_classes=registry_authentication_classes(),
     )
     def publish_module(self, request: Request, pk: str) -> core.OperationPostponedResponse:
