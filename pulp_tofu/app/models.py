@@ -249,6 +249,7 @@ class TofuRepository(Repository):
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
         permissions = [
+            ("sync_tofurepository", "Can start a sync task"),
             ("modify_tofurepository", "Can modify content of the repository"),
             ("repair_tofurepository", "Can repair repository versions"),
             ("manage_roles_tofurepository", "Can manage roles on tofu repositories"),

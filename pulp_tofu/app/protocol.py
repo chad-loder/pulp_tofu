@@ -50,6 +50,15 @@ def protocols_supported(protocols: tuple[str, ...]) -> bool:
     return any(p.partition(".")[0] in SUPPORTED_PROTOCOL_MAJORS for p in protocols)
 
 
+def latest_release(versions: list[str]) -> str | None:
+    """The highest ``MAJOR.MINOR.PATCH`` version, ignoring pre-releases and build metadata.
+
+    OpenTofu resolves an unconstrained provider to its newest release the same way.
+    """
+    releases = [v for v in versions if all(p.isdigit() for p in v.split(".")) and v.count(".") == 2]
+    return max(releases, key=lambda v: tuple(int(p) for p in v.split(".")), default=None)
+
+
 def address_allowed(address: ProviderAddress, includes: list[str], excludes: list[str]) -> bool:
     """Apply case-sensitive ``hostname/namespace/type`` glob filters.
 

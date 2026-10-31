@@ -1,9 +1,15 @@
 """REST API viewsets for pulp_tofu."""
 
+from drf_spectacular.utils import extend_schema
+from rest_framework.decorators import action
+from rest_framework.request import Request
+
 from pulpcore.plugin import viewsets as core
 from pulpcore.plugin.actions import ModifyRepositoryActionMixin
+from pulpcore.plugin.serializers import AsyncOperationResponseSerializer
+from pulpcore.plugin.tasking import dispatch
 
-from . import models, serializers
+from . import models, serializers, tasks
 
 
 def _object_policy(model: str, *, create: list[str], update: list[str]) -> list[dict[str, object]]:
@@ -143,11 +149,49 @@ class TofuRepositoryViewSet(core.RepositoryViewSet, ModifyRepositoryActionMixin,
                     "has_model_or_domain_or_obj_perms:tofu.view_tofurepository",
                 ],
             },
+            {
+                "action": ["sync"],
+                "principal": "authenticated",
+                "effect": "allow",
+                "condition": [
+                    "has_model_or_domain_or_obj_perms:tofu.sync_tofurepository",
+                    "has_model_or_domain_or_obj_perms:tofu.view_tofurepository",
+                    _REMOTE_PARAM_VIEW,
+                ],
+            },
         ],
         "creation_hooks": _creation_hooks("tofurepository"),
         "queryset_scoping": {"function": "scope_queryset"},
     }
-    LOCKED_ROLES = _roles("tofurepository", "modify", "repair")
+    LOCKED_ROLES = _roles("tofurepository", "modify", "repair", "sync")
+
+    @extend_schema(
+        description="Fetch the selected providers from a remote into a new repository version.",
+        summary="Sync from a remote",
+        responses={202: AsyncOperationResponseSerializer},
+    )
+    @action(detail=True, methods=["post"], serializer_class=serializers.TofuSyncSerializer)
+    def sync(self, request: Request, pk: str) -> core.OperationPostponedResponse:
+        """Dispatch a sync task."""
+        repository = self.get_object()
+        serializer = serializers.TofuSyncSerializer(
+            data=request.data, context={"request": request, "repository_pk": pk}
+        )
+        serializer.is_valid(raise_exception=True)
+        remote = serializer.validated_data.get("remote", repository.remote)
+        result = dispatch(
+            tasks.synchronize,
+            exclusive_resources=[repository],
+            shared_resources=[remote],
+            kwargs={
+                "remote_pk": str(remote.pk),
+                "repository_pk": str(repository.pk),
+                "providers": [dict(p) for p in serializer.validated_data["providers"]],
+                "platforms": serializer.validated_data["platforms"],
+                "mirror": serializer.validated_data["mirror"],
+            },
+        )
+        return core.OperationPostponedResponse(result, request)
 
 
 class TofuRepositoryVersionViewSet(core.RepositoryVersionViewSet):

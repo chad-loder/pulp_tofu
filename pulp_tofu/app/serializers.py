@@ -13,7 +13,6 @@ from pulpcore.plugin.models import Remote
 from . import models
 
 _PROVIDER_FIELDS = ("hostname", "namespace", "provider_type", "version")
-_POLICIES = frozenset({Remote.ON_DEMAND, Remote.STREAMED})
 
 
 class ProviderVersionSerializer(platform.NoArtifactContentSerializer):
@@ -88,9 +87,10 @@ class TofuRemoteSerializer(platform.RemoteSerializer):
     policy = serializers.ChoiceField(
         help_text=_(
             "on_demand stores each archive the first time a client requests it; "
-            "streamed serves archives without storing them."
+            "streamed serves archives without storing them; immediate also downloads "
+            "every archive a sync selects."
         ),
-        choices=[c for c in Remote.POLICY_CHOICES if c[0] in _POLICIES],
+        choices=Remote.POLICY_CHOICES,
         default=Remote.ON_DEMAND,
     )
     includes = serializers.ListField(
@@ -156,6 +156,35 @@ class TofuRepositorySerializer(platform.RepositorySerializer):
     class Meta:
         fields = platform.RepositorySerializer.Meta.fields
         model = models.TofuRepository
+
+
+class ProviderSelectionSerializer(serializers.Serializer[dict[str, object]]):
+    """One provider for a sync to fetch from the remote's registry."""
+
+    namespace = serializers.CharField(help_text=_("Provider namespace, e.g. hashicorp."))
+    type = serializers.CharField(help_text=_("Provider type, e.g. aws."))
+    versions = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+        help_text=_("Exact versions to fetch; empty fetches the latest release."),
+    )
+
+
+class TofuSyncSerializer(platform.RepositorySyncURLSerializer):
+    """Sync options: which providers and platforms to fetch."""
+
+    providers = ProviderSelectionSerializer(
+        many=True,
+        allow_empty=False,
+        help_text=_("Providers to fetch; the registry offers no list of all providers."),
+    )
+    platforms = serializers.ListField(
+        child=serializers.RegexField(r"^[a-z0-9]+_[a-z0-9]+$"),
+        required=False,
+        default=list,
+        help_text=_("os_arch platforms to fetch, e.g. linux_amd64; empty fetches all."),
+    )
 
 
 class MirrorURLField(serializers.CharField):
