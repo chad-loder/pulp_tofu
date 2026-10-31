@@ -60,3 +60,26 @@ is already published with different checksums answers 409; uploading the same re
 again changes nothing.
 
 OpenTofu then installs it as `<TOFU_REGISTRY_HOSTNAME>/acme/widget`.
+
+## Publish from GitHub Actions
+
+After GoReleaser's provider release step, upload `dist/` with a registry token that has
+`publish` scope on the namespace. The token goes to curl in a header file, so it never
+appears in a process's arguments:
+
+```yaml
+- name: Publish to Pulp
+  env:
+    PULP_TOKEN: ${{ secrets.PULP_TOFU_TOKEN }}
+    NAMESPACE: /pulp/api/v3/pulp_tofu/namespaces/0190f7c4-.../
+  run: |
+    printf 'Authorization: Bearer %s\n' "$PULP_TOKEN" > "$RUNNER_TEMP/pulp-auth"
+    cd dist
+    files=()
+    for f in terraform-provider-widget_"${GITHUB_REF_NAME#v}"_*; do files+=(-F "files=@$f"); done
+    curl -fsS -H @"$RUNNER_TEMP/pulp-auth" "${files[@]}" "https://pulp.example${NAMESPACE}publish/"
+```
+
+On pulpcore 3.120 or later, a job can use the provider's OIDC token through pulpcore's
+Workload Identity instead of a stored token; see
+[Run a Private Registry](site:pulp_tofu/docs/user/guides/private/).
