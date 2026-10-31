@@ -1,9 +1,10 @@
 # Install the Plugin
 
 pulp_tofu needs pulpcore 3.116 or later and below 3.130, on Python 3.12 or later.
+It is not on PyPI yet, so install it from git, into the same environment as pulpcore:
 
 ```bash
-pip install pulp-tofu
+pip install "pulp-tofu @ git+https://github.com/chad-loder/pulp_tofu"
 pulpcore-manager migrate tofu
 ```
 
