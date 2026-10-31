@@ -8,4 +8,4 @@ pulp_tofu adds these settings to Pulp's. Set them as any other Pulp setting.
 | `TOFU_REGISTRY_HOSTNAME` | `None` | The hostname, with a port if not 443, that users write in source addresses. Namespaces without a `content_hostname` serve content whose origin is this host. |
 | `TOFU_REGISTRY_DOMAIN` | `"default"` | With `DOMAIN_ENABLED`, the domain the registry serves. |
 | `TOFU_REGISTRY_PATH_PREFIX` | `"/tofu/"` | Path of the registry API. The webserver snippets route `/tofu/`; change them with it. |
-| `TOFU_AUTHENTICATION_CLASSES` | `[]` | Dotted paths of DRF authentication classes tried on registry requests before pulpcore's defaults. |
+| `TOFU_AUTHENTICATION_CLASSES` | `["pulp_tofu.app.authentication.TofuTokenAuthentication"]` | Dotted paths of DRF authentication classes tried on registry requests and namespace publishing before pulpcore's defaults. Remove the token class to turn registry tokens off. |

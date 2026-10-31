@@ -397,3 +397,36 @@ class TofuNamespace(BaseModel):
             ("manage_roles_tofunamespace", "Can manage roles on tofu namespaces"),
             ("publish_tofunamespace", "Can publish providers and modules to the namespace"),
         ]
+
+
+TokenScope = Literal["read", "publish"]
+
+
+class TofuToken(BaseModel):
+    """A user's bearer token for the registry, as OpenTofu sends ``TF_TOKEN_<host>``.
+
+    The token acts as its user, narrowed to ``namespaces`` and to ``scope``: ``read``
+    reads them, ``publish`` also publishes to them. Only a SHA-256 digest of the secret
+    is stored; the secret is high-entropy, so a slow hash adds nothing. ``prefix`` is
+    public and finds the row.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="tofu_tokens"
+    )
+    name = models.TextField()
+    prefix = models.CharField(max_length=16, unique=True)
+    digest = models.CharField(max_length=64)
+    scope = models.TextField(choices=[("read", "read"), ("publish", "publish")])
+    namespaces = models.ManyToManyField(TofuNamespace, related_name="tokens")
+    expires_at = models.DateTimeField(null=True)
+    last_used_at = models.DateTimeField(null=True)
+
+    def allows(self, namespace: TofuNamespace, scope: TokenScope) -> bool:
+        """Whether the token covers ``scope`` on ``namespace``."""
+        if scope == "publish" and self.scope != "publish":
+            return False
+        return self.namespaces.filter(pk=namespace.pk).exists()
+
+    class Meta:
+        default_related_name = "%(app_label)s_%(model_name)s"

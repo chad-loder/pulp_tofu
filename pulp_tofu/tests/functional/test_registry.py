@@ -1,7 +1,9 @@
 import base64
 import hashlib
 import json
+import secrets
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -87,3 +89,53 @@ def test_private_namespace_requires_a_reader(
     login = f"{bindings_cfg.username}:{bindings_cfg.password}".encode()
     admin = {"Authorization": "Basic " + base64.b64encode(login).decode()}
     assert fetch(path, admin).status == 200
+
+
+def _bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_token_reads_only_its_namespaces(
+    mirror: Mirror,
+    served: Callable[..., Any],
+    tofu_bindings: Any,
+    tofu_namespace_factory: Callable[..., Any],
+    gen_object_with_cleanup: Callable[..., Any],
+) -> None:
+    namespace = served(private=True)
+    other = tofu_namespace_factory(f"other{secrets.token_hex(4)}", mirror.distribution)
+
+    def token(*namespaces: Any, **body: object) -> str:  # noqa: ANN401
+        hrefs = [n.pulp_href for n in namespaces]
+        body.update(name="ci", namespaces=hrefs)
+        return gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token
+
+    path = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}/versions"
+    good = token(namespace)
+    assert fetch(path, _bearer(good)).status == 200
+    assert fetch(path, _bearer(token(other))).status == 403
+    assert fetch(path, _bearer(good + "x")).status == 401
+    past = datetime.now(UTC) - timedelta(minutes=1)
+    assert fetch(path, _bearer(token(namespace, expires_at=past))).status == 401
+
+
+def test_guarded_distribution_serves_preauthenticated_urls(
+    mirror: Mirror,
+    served: Callable[..., Any],
+    pulpcore_bindings: Any,
+    gen_object_with_cleanup: Callable[..., Any],
+) -> None:
+    served()
+    guard = gen_object_with_cleanup(
+        pulpcore_bindings.ContentguardsContentRedirectApi, {"name": secrets.token_hex(8)}
+    )
+    response = mirror.bindings.DistributionsTofuApi.partial_update(
+        mirror.distribution.pulp_href, {"content_guard": guard.pulp_href}
+    )
+    mirror.monitor_task(response.task)
+
+    base = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}"
+    url = URL(_json(f"{base}/1.1.0/download/linux/amd64")["download_url"])
+    assert "validate_token" in url.query
+    assert fetch(url.raw_path_qs).status == 200
+    assert fetch(url.path).status == 403

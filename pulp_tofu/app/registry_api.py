@@ -11,20 +11,26 @@ from typing import TYPE_CHECKING, cast, override
 
 from django.conf import settings
 from django.db.models import QuerySet
-from django.utils.module_loading import import_string
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.permissions import BasePermission
 from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.settings import api_settings
 from rest_framework.views import APIView
 from yarl import URL
 
+from pulpcore.plugin.models import ContentRedirectContentGuard
 from pulpcore.plugin.util import get_domain
 
+from .authentication import registry_authenticators
 from .hashes import zh_hash
-from .models import ProviderPackage, ProviderVersion, TofuDistribution, TofuNamespace
+from .models import (
+    ProviderPackage,
+    ProviderVersion,
+    TofuDistribution,
+    TofuNamespace,
+    TofuToken,
+)
 from .protocol import Platform
 
 if TYPE_CHECKING:
@@ -61,28 +67,28 @@ class _RegistryView(APIView):
 
     @override
     def get_authenticators(self) -> list[BaseAuthentication]:
-        extra = [import_string(path) for path in settings.TOFU_AUTHENTICATION_CLASSES]
-        defaults = cast(
-            "list[type[BaseAuthentication]]", api_settings.DEFAULT_AUTHENTICATION_CLASSES
-        )
-        return [cls() for cls in (*extra, *defaults)]
+        return registry_authenticators()
 
     def _namespace(self, request: Request, name: str) -> "_Served | Response":
         """The namespace the caller may read, or the error response to send instead."""
         if not settings.TOFU_REGISTRY_ENABLED:
             return _errors(404, "Not Found")
         namespace = (
-            TofuNamespace.objects.select_related("distribution")
+            TofuNamespace.objects.select_related("distribution__content_guard")
             .filter(name=name, pulp_domain=get_domain())
             .first()
         )
         if namespace is None or namespace.distribution is None:
             return _errors(404, "Not Found")
-        user = cast("AbstractUser | AnonymousUser", request.user)
-        if namespace.private and not user.has_perm("tofu.view_tofunamespace", namespace):
-            if user.is_authenticated:
+        if namespace.private:
+            user = cast("AbstractUser | AnonymousUser", request.user)
+            token = request.auth if isinstance(request.auth, TofuToken) else None
+            if not user.is_authenticated:
+                return _errors(401, "Unauthorized")
+            if not user.has_perm("tofu.view_tofunamespace", namespace) or (
+                token is not None and not token.allows(namespace, "read")
+            ):
                 return _errors(403, "Forbidden")
-            return _errors(401, "Unauthorized")
         return _Served(namespace=namespace, distribution=namespace.distribution)
 
     @staticmethod
@@ -176,9 +182,11 @@ class ProviderDownloadView(_RegistryView):
             "os": os,
             "arch": arch,
             "filename": record["filename"],
-            "download_url": str(base / record["filename"]),
-            "shasums_url": str(base.joinpath(CHECKSUMS_SEGMENT, "SHA256SUMS")),
-            "shasums_signature_url": str(base.joinpath(CHECKSUMS_SEGMENT, "SHA256SUMS.sig")),
+            "download_url": _content_url(found, base / record["filename"]),
+            "shasums_url": _content_url(found, base.joinpath(CHECKSUMS_SEGMENT, "SHA256SUMS")),
+            "shasums_signature_url": _content_url(
+                found, base.joinpath(CHECKSUMS_SEGMENT, "SHA256SUMS.sig")
+            ),
             "shasum": record["sha256"],
             "signing_keys": {
                 "gpg_public_keys": [
@@ -199,6 +207,20 @@ class ProviderDownloadView(_RegistryView):
                 for platform_key, r in records.items()
             }
         return Response(document)
+
+
+def _content_url(served: _Served, url: URL) -> str:
+    """``url``, preauthenticated when a redirect guard protects the distribution.
+
+    OpenTofu sends no credentials for archives, checksums or signatures, so a guarded
+    distribution is readable only through URLs its ``ContentRedirectContentGuard``
+    signed; they expire after the guard's ``EXPIRETIME``. Other guards refuse OpenTofu.
+    """
+    guard = served.distribution.content_guard
+    redirect = guard.cast() if guard is not None else None
+    if isinstance(redirect, ContentRedirectContentGuard):
+        return str(redirect.preauthenticate_url(str(url)))
+    return str(url)
 
 
 def _content_base(served: _Served, provider_version: ProviderVersion) -> URL:

@@ -8,10 +8,11 @@ from typing import Any
 import pytest
 from yarl import URL
 
+from pulpcore.client.pulp_tofu import ApiClient, Configuration, PulpTofuNamespacesApi
 from pulpcore.client.pulp_tofu.exceptions import ApiException
 from pulpcore.tests.functional.utils import PulpTaskError
 
-from .conftest import fetch
+from .conftest import E2E, PULP_URL, fetch
 from .fake_registry import FakeRegistry, Release, signed_release
 
 REGISTRY = "/tofu/v1/providers"
@@ -27,10 +28,22 @@ class Publisher:
     repository: Any
     distribution: Any
 
-    def publish(self, files: list[tuple[str, bytes]]) -> Any:  # noqa: ANN401
-        response = self.bindings.PulpTofuNamespacesApi.publish(
-            self.namespace.pulp_href, files=files
-        )
+    def publish(self, files: list[tuple[str, bytes]], token: str | None = None) -> Any:  # noqa: ANN401
+        if token is None:
+            response = self.bindings.PulpTofuNamespacesApi.publish(
+                self.namespace.pulp_href, files=files
+            )
+        else:
+            # A client with no basic credentials, so the bearer token is the only one.
+            configuration = Configuration(host=PULP_URL)
+            configuration.ssl_ca_cert = str(E2E / "certs" / "ca.crt")
+            configuration.safe_chars_for_path_param = "/"
+            api = PulpTofuNamespacesApi(ApiClient(configuration))
+            response = api.publish(
+                self.namespace.pulp_href,
+                files=files,
+                _headers={"Authorization": f"Bearer {token}"},
+            )
         return self.monitor_task(response.task)
 
 
@@ -156,3 +169,25 @@ def test_a_distribution_with_a_remote_refuses_uploads(
     with pytest.raises(ApiException) as error:
         tofu_distribution_factory(remote=remote, allow_uploads=True)
     assert error.value.status == 400
+
+
+def test_release_job_publishes_with_a_publish_token(
+    publisher: Publisher,
+    upstream: tuple[FakeRegistry, int, str],
+    provider_type: str,
+    tofu_bindings: Any,
+    gen_object_with_cleanup: Callable[..., Any],
+) -> None:
+    registry, _, _ = upstream
+    files = _files(provider_type, "1.0.0", _release(registry, provider_type))
+
+    def token(scope: str) -> str:
+        body = {"name": scope, "scope": scope, "namespaces": [publisher.namespace.pulp_href]}
+        return gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token
+
+    with pytest.raises(ApiException) as error:
+        publisher.publish(files, token=token("read"))
+    assert error.value.status == 403
+    publisher.publish(files, token=token("publish"))
+    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    assert fetch(f"{base}/versions").status == 200

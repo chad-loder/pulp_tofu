@@ -2,14 +2,17 @@
 
 import base64
 from gettext import gettext as _
+from typing import override
 
 from django.conf import settings
+from django.contrib.auth.models import AnonymousUser
 from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError
+from django.db.models import QuerySet
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins
 from rest_framework.decorators import action
-from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
 from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
 
@@ -21,6 +24,7 @@ from pulpcore.plugin.tasking import dispatch
 from pulpcore.plugin.util import get_domain
 
 from . import models, serializers, tasks
+from .authentication import registry_authentication_classes
 
 
 def _object_policy(model: str, *, create: list[str], update: list[str]) -> list[dict[str, object]]:
@@ -327,12 +331,17 @@ class TofuNamespaceViewSet(
         methods=["post"],
         serializer_class=serializers.ProviderReleaseSerializer,
         parser_classes=[MultiPartParser],
+        # A release job may authenticate with a registry token.
+        authentication_classes=registry_authentication_classes(),
     )
     def publish(self, request: Request, pk: str) -> core.OperationPostponedResponse:
         """Store the release's archives, then verify and add it in a task."""
         namespace = self.get_object()
         if not isinstance(namespace, models.TofuNamespace):
             raise TypeError(f"expected a TofuNamespace, got {type(namespace)}")
+        token = request.auth
+        if isinstance(token, models.TofuToken) and not token.allows(namespace, "publish"):
+            raise PermissionDenied(_("The token does not publish to this namespace."))
         hostname, repository = _upload_target(namespace)
         serializer = serializers.ProviderReleaseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -374,6 +383,39 @@ class TofuNamespaceViewSet(
             kwargs=kwargs,
         )
         return core.OperationPostponedResponse(result, request)
+
+
+class TofuTokenViewSet(
+    core.NamedModelViewSet,
+    mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+):
+    """The caller's registry tokens. Deleting a token revokes it."""
+
+    endpoint_name = "pulp_tofu/tokens"  # type: ignore[assignment]
+    queryset = models.TofuToken.objects.all()
+    serializer_class = serializers.TofuTokenSerializer
+
+    DEFAULT_ACCESS_POLICY = {
+        "statements": [
+            {
+                "action": ["list", "create", "retrieve", "destroy"],
+                "principal": "authenticated",
+                "effect": "allow",
+            }
+        ],
+        "queryset_scoping": {"function": "scope_queryset"},
+    }
+
+    @override
+    def scope_queryset(self, qs: "QuerySet[models.TofuToken]") -> "QuerySet[models.TofuToken]":
+        """Every user, administrators too, sees only their own tokens."""
+        user = self.request.user
+        if isinstance(user, AnonymousUser):
+            return qs.none()
+        return qs.filter(user=user)
 
 
 class ReleaseConflict(APIException):

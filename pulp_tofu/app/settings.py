@@ -14,5 +14,6 @@ TOFU_REGISTRY_DOMAIN = "default"
 # URL path prefix of the registry API, served by the API workers.
 TOFU_REGISTRY_PATH_PREFIX = "/tofu/"
 
-# Authentication classes for the registry API, tried before pulpcore's defaults.
-TOFU_AUTHENTICATION_CLASSES: list[str] = []
+# Authentication classes for the registry API and namespace publishing, tried before
+# pulpcore's defaults. Registry tokens authenticate only where these apply.
+TOFU_AUTHENTICATION_CLASSES: list[str] = ["pulp_tofu.app.authentication.TofuTokenAuthentication"]

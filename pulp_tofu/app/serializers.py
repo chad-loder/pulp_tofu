@@ -12,6 +12,7 @@ from pulpcore.plugin import serializers as platform
 from pulpcore.plugin.models import Remote
 
 from . import models
+from .authentication import IssuedToken, issue_token
 from .protocol import Platform
 from .publishing import MAX_SMALL_FILE_BYTES, ReleaseError, ReleaseFiles, parse_release
 from .signing import parse_fingerprint
@@ -361,6 +362,77 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
             "keyring",
         )
         model = models.TofuNamespace
+
+
+class TofuTokenSerializer(platform.ModelSerializer):
+    """A registry token. The token itself appears only in the response that creates it."""
+
+    pulp_href = platform.IdentityField(view_name="pulp_tofu/tokens-detail")
+    name = serializers.CharField(max_length=128, help_text=_("A label for the token."))
+    scope = serializers.ChoiceField(
+        choices=["read", "publish"],
+        default="read",
+        help_text=_("read reads the namespaces; publish also publishes to them."),
+    )
+    namespaces = platform.RelatedField(
+        many=True,
+        view_name="pulp_tofu/namespaces-detail",
+        queryset=models.TofuNamespace.objects.all(),
+        help_text=_("The namespaces the token covers."),
+    )
+    expires_at = serializers.DateTimeField(
+        required=False, allow_null=True, help_text=_("When the token stops working.")
+    )
+    prefix = serializers.CharField(read_only=True, help_text=_("The token's public prefix."))
+    last_used_at = serializers.DateTimeField(read_only=True)
+    token = serializers.SerializerMethodField(
+        help_text=_("The bearer token to set as TF_TOKEN_<host>; returned only on creation.")
+    )
+
+    def get_token(self, instance: models.TofuToken) -> str | None:
+        issued = self.context.get("issued_token")
+        return issued.token if isinstance(issued, IssuedToken) else None
+
+    def validate_namespaces(
+        self, namespaces: list[models.TofuNamespace]
+    ) -> list[models.TofuNamespace]:
+        """Refuse namespaces the caller cannot see."""
+        user = getattr(self.context.get("request"), "user", None)
+        if not namespaces:
+            raise serializers.ValidationError(_("Name at least one namespace."))
+        for namespace in namespaces:
+            if user is None or not (
+                user.has_perm("tofu.view_tofunamespace")
+                or user.has_perm("tofu.view_tofunamespace", namespace)
+            ):
+                raise serializers.ValidationError(_("Unknown namespace."))
+        return namespaces
+
+    @override
+    def create(self, validated_data: dict[str, object]) -> models.TofuToken:
+        issued = issue_token()
+        self.context["issued_token"] = issued
+        namespaces = validated_data.pop("namespaces")
+        token = models.TofuToken.objects.create(
+            **validated_data,
+            user=self.context["request"].user,
+            prefix=issued.prefix,
+            digest=issued.digest,
+        )
+        token.namespaces.set(cast("list[models.TofuNamespace]", namespaces))
+        return token
+
+    class Meta:
+        fields = platform.ModelSerializer.Meta.fields + (
+            "name",
+            "scope",
+            "namespaces",
+            "expires_at",
+            "prefix",
+            "last_used_at",
+            "token",
+        )
+        model = models.TofuToken
 
 
 class ProviderReleaseSerializer(serializers.Serializer[object]):
