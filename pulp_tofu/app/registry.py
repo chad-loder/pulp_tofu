@@ -8,27 +8,38 @@ objects; nothing past this module touches upstream JSON.
 
 import asyncio
 import json
-import os
 import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from string import hexdigits
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
-from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
-from asgiref.sync import sync_to_async
+from aiohttp import (
+    BasicAuth,
+    ClientConnectionError,
+    ClientPayloadError,
+    ClientResponseError,
+    ClientSession,
+    ClientTimeout,
+)
 from yarl import URL
 
-from pulpcore.plugin.exceptions import TimeoutException
-
+from .flight import SingleFlight
 from .protocol import Platform, ProviderAddress
+from .retry import is_retryable, retry_delay
 
 if TYPE_CHECKING:
-    from pulpcore.plugin.download import DownloaderFactory
+    from pulpcore.plugin.download import HttpDownloader
 
     from .models import TofuRemote
+
+
+class _Throttler(Protocol):
+    """The part of ``asyncio_throttle.Throttler`` that pulpcore's remotes provide."""
+
+    async def acquire(self) -> None: ...
+
 
 DISCOVERY_PATH = ".well-known/terraform.json"
 PROVIDERS_SERVICE = "providers.v1"
@@ -36,12 +47,18 @@ PROVIDERS_SERVICE = "providers.v1"
 # Upper bound on any registry JSON document or SHA256SUMS file read into memory.
 MAX_METADATA_BYTES = 16 * 1024 * 1024
 
-# Seconds for the first, pooled attempt at a metadata request when the remote sets no
-# timeout of its own. Registry documents are small, so a read that stalls this long is a
-# dead connection, not a slow one.
-PROBE_READ_TIMEOUT = 5.0
-PROBE_CONNECT_TIMEOUT = 10.0
-PROBE_TOTAL_TIMEOUT = 60.0
+# Timeouts for metadata requests when the remote sets none. A healthy but busy registry
+# answers well inside the read timeout; a connection the network silently dropped
+# fails it and is replaced.
+METADATA_READ_TIMEOUT = 30.0
+METADATA_CONNECT_TIMEOUT = 10.0
+METADATA_TOTAL_TIMEOUT = 120.0
+
+# pulpcore's Remote.DEFAULT_MAX_RETRIES, without importing models here.
+Remote_DEFAULT_MAX_RETRIES = 3
+
+# Failures of the connection itself, as opposed to an HTTP error status.
+_TRANSPORT_ERRORS = (ClientConnectionError, ClientPayloadError, OSError, TimeoutError)
 
 
 class UpstreamError(Exception):
@@ -156,12 +173,20 @@ def parse_download(document: object, base_url: URL) -> DownloadInfo:
 
 @dataclass(slots=True, kw_only=True)
 class _Session:
-    """One remote configuration's long-lived downloader factory and discovered service."""
+    """One remote configuration's long-lived HTTP session and discovered service.
+
+    ``proxy``, ``proxy_auth`` and ``auth`` are the remote's, which pulpcore passes per
+    request rather than on the session.
+    """
 
     stamp: object
     loop: asyncio.AbstractEventLoop
-    factory: "DownloaderFactory"
     http: ClientSession
+    proxy: str | None
+    proxy_auth: BasicAuth | None
+    auth: BasicAuth | None
+    concurrency: asyncio.Semaphore
+    throttler: "_Throttler | None"
     created_at: float = field(default_factory=time.monotonic)
     leases: int = 0
     retired: bool = False
@@ -192,7 +217,7 @@ class SessionPool:
         session = self._checkout(remote)
         try:
             yield session
-        except UpstreamUnreachable:
+        except _TRANSPORT_ERRORS:
             self._retire(session)
             raise
         finally:
@@ -230,10 +255,21 @@ class SessionPool:
         # stay importable without them.
         from pulpcore.plugin.download import DownloaderFactory
 
-        factory = DownloaderFactory(remote)
-        # Every downloader a factory builds shares the factory's session.
-        http: ClientSession = getattr(factory.build(remote.url), "session")  # noqa: B009
-        session = _Session(stamp=remote.pulp_last_updated, loop=loop, factory=factory, http=http)
+        # The factory builds the session from the remote's TLS, header and timeout
+        # settings; a downloader it builds carries the per-request proxy and auth.
+        probe = cast("HttpDownloader", DownloaderFactory(remote).build(remote.url))
+        session = _Session(
+            stamp=remote.pulp_last_updated,
+            loop=loop,
+            http=probe.session,
+            proxy=probe.proxy,
+            proxy_auth=probe.proxy_auth,
+            auth=probe.auth,
+            concurrency=asyncio.Semaphore(
+                remote.download_concurrency or remote.DEFAULT_DOWNLOAD_CONCURRENCY
+            ),
+            throttler=remote.download_throttler,
+        )
         self._sessions[id(session)] = session
         return session
 
@@ -320,63 +356,71 @@ class RegistryClient:
     async def fetch_bytes(self, url: URL | str) -> bytes:
         """Fetch a small document into memory.
 
-        The first attempt runs on the pooled session without pulpcore's retries and with
-        a short read timeout, so a connection the upstream reaped while idle fails fast:
-        at once after a close or reset, within ``PROBE_READ_TIMEOUT`` after a silent
-        drop. That failure retires the session, and the second attempt runs on fresh
-        connections with the remote's normal retries.
+        Concurrent fetches of the same URL through the same remote share one request.
+        Failures follow ``retry``'s policy, with one exception: the first transport
+        failure retries at once on fresh connections, because it usually means the
+        upstream reaped an idle pooled connection, not that the upstream is down.
 
         Raises:
             UpstreamNotFound: The server answered 404.
+            UpstreamUnreachable: The connection kept failing.
             UpstreamError: Any other failure, or a body over ``MAX_METADATA_BYTES``.
         """
-        try:
-            path = await self._fetch_to_file(url, probe=True)
-        except UpstreamUnreachable:
-            path = await self._fetch_to_file(url, probe=False)
-        try:
-            return await sync_to_async(_read_bounded, thread_sensitive=False)(path)
-        finally:
-            await sync_to_async(_unlink, thread_sensitive=False)(path)
-
-    async def _fetch_to_file(self, url: URL | str, *, probe: bool) -> Path:
         remote = self._remote
-        options: dict[str, object] = {}
-        extra_data: dict[str, object] = {}
-        if probe:
-            options["max_retries"] = 0
-            timeout = ClientTimeout(
-                total=remote.total_timeout or PROBE_TOTAL_TIMEOUT,
-                sock_connect=remote.sock_connect_timeout or PROBE_CONNECT_TIMEOUT,
-                sock_read=remote.sock_read_timeout or PROBE_READ_TIMEOUT,
-            )
-            extra_data["request_kwargs"] = {"timeout": timeout}
-        async with POOL.lease(remote) as session:
-            downloader = remote.get_downloader(
-                url=str(url), download_factory=session.factory, **options
-            )
+        key = (remote.pk, remote.pulp_last_updated, str(url))
+        return await _FETCHES.run(key, lambda: self._fetch_with_retries(str(url)))
+
+    async def _fetch_with_retries(self, url: str) -> bytes:
+        max_retries = self._remote.max_retries
+        attempts = (Remote_DEFAULT_MAX_RETRIES if max_retries is None else max_retries) + 1
+        failures = 0
+        while True:
             try:
-                result = await downloader.run(extra_data=extra_data)
+                return await self._fetch_once(url)
             except ClientResponseError as exc:
                 if exc.status == 404:
                     raise UpstreamNotFound(url) from exc
-                raise UpstreamError(f"{url} answered {exc.status}") from exc
-            except (ClientError, OSError, TimeoutError, TimeoutException) as exc:
-                raise UpstreamUnreachable(f"{url} failed: {exc}") from exc
-        return Path(result.path)
+                error: Exception = exc
+            except _TRANSPORT_ERRORS as exc:
+                error = exc
+            failures += 1
+            if failures >= attempts or not is_retryable(error):
+                if isinstance(error, ClientResponseError):
+                    raise UpstreamError(f"{url} answered {error.status}") from error
+                raise UpstreamUnreachable(f"{url} failed: {error!r}") from error
+            if failures == 1 and not isinstance(error, ClientResponseError):
+                continue
+            await asyncio.sleep(retry_delay(failures, error))
+
+    async def _fetch_once(self, url: str) -> bytes:
+        remote = self._remote
+        timeout = ClientTimeout(
+            total=remote.total_timeout or METADATA_TOTAL_TIMEOUT,
+            sock_connect=remote.sock_connect_timeout or METADATA_CONNECT_TIMEOUT,
+            sock_read=remote.sock_read_timeout or METADATA_READ_TIMEOUT,
+        )
+        async with POOL.lease(remote) as session, session.concurrency:
+            if session.throttler is not None:
+                await session.throttler.acquire()
+            async with session.http.get(
+                url,
+                timeout=timeout,
+                proxy=session.proxy,
+                proxy_auth=session.proxy_auth,
+                auth=session.auth,
+            ) as response:
+                response.raise_for_status()
+                if (response.content_length or 0) > MAX_METADATA_BYTES:
+                    raise UpstreamError(f"{url} exceeds the metadata size limit")
+                body = bytearray()
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    body += chunk
+                    if len(body) > MAX_METADATA_BYTES:
+                        raise UpstreamError(f"{url} exceeds the metadata size limit")
+                return bytes(body)
 
 
-def _read_bounded(path: Path) -> bytes:
-    if path.stat().st_size > MAX_METADATA_BYTES:
-        raise UpstreamError("upstream metadata exceeds the size limit")
-    return path.read_bytes()
-
-
-def _unlink(path: Path) -> None:
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
+_FETCHES: SingleFlight[bytes] = SingleFlight()
 
 
 def _is_sha256(value: str) -> bool:

@@ -7,7 +7,10 @@ archives stream through pulpcore's downloader, which checks them against the sig
 SHA-256 while it saves them.
 """
 
+import asyncio
 import logging
+import weakref
+from collections.abc import Coroutine, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -20,8 +23,9 @@ from django.utils import timezone
 from pulpcore.plugin.content import Handler, PathNotResolved
 from pulpcore.plugin.models import ContentArtifact, RemoteArtifact, RepositoryVersion
 from pulpcore.plugin.tasking import adispatch
-from pulpcore.plugin.util import get_domain
+from pulpcore.plugin.util import get_domain, get_domain_pk
 
+from .flight import SingleFlight
 from .hashes import zh_hash
 from .models import (
     ArchiveRecord,
@@ -147,17 +151,41 @@ class TofuMirror(Handler):
         remote = source.upstream
         if remote is None:
             raise PathNotResolved(request.path)
+        if remote.policy == TofuRemote.STREAMED:
+            # Nothing is stored for waiters to share, so each request streams its own copy.
+            return await self._pull(request, headers, remote, source, package, platform, record)
+        # One request per archive downloads it; the others wait, then serve what it stored.
+        async with _archive_lock(package.pk):
+            stored = (
+                await ContentArtifact.objects.select_related("artifact")
+                .filter(content=package, artifact__isnull=False)
+                .afirst()
+            )
+            if stored is not None:
+                return await self._serve_content_artifact(stored, headers, request)
+            response = await self._pull(request, headers, remote, source, package, platform, record)
+        await adispatch(record_h1, kwargs={"package_pk": str(package.pk)})
+        return response
+
+    async def _pull(
+        self,
+        request: web.Request,
+        headers: "Mapping[str, str]",
+        remote: TofuRemote,
+        source: _Source,
+        package: ProviderPackage,
+        platform: Platform,
+        record: ArchiveRecord,
+    ) -> web.StreamResponse:
+        """Stream the archive from upstream to the client, storing it unless streamed."""
         remote_artifact = await self._remote_artifact(remote, source, package, platform, record)
-        save = remote.policy != TofuRemote.STREAMED
-        response = await self._stream_remote_artifact(
+        response: web.StreamResponse = await self._stream_remote_artifact(
             request,
             web.StreamResponse(headers=headers),
             remote_artifact,
-            save_artifact=save,
+            save_artifact=remote.policy != TofuRemote.STREAMED,
             repository=source.repository,
         )
-        if save:
-            await adispatch(record_h1, kwargs={"package_pk": str(package.pk)})
         return response
 
     async def _source(self, request: web.Request) -> _Source:
@@ -196,35 +224,31 @@ class TofuMirror(Handler):
             pk__in=source.repository_version.content, **_address_filter(source.address)
         )
 
-    async def _listing(self, remote: TofuRemote, address: ProviderAddress) -> list[UpstreamVersion]:
-        """The provider's upstream versions, from cache while it is fresh."""
+    async def _listing(
+        self, remote: TofuRemote, address: ProviderAddress, *, wanted: str | None = None
+    ) -> list[UpstreamVersion]:
+        """The provider's upstream versions, answered from the cache whenever it has them.
+
+        A stale listing is returned at once and refreshed in the background. Only a
+        provider never listed before, or a ``wanted`` version the cached listing lacks,
+        waits for upstream. Upstream 404s are cached for ``NEGATIVE_TTL`` at most.
+        """
         cached = await ProviderIndex.objects.filter(
             remote=remote, **_address_filter(address)
         ).afirst()
-        now = timezone.now()
-        if cached is not None and now - cached.fetched_at < timedelta(seconds=remote.metadata_ttl):
-            return _versions_from_json(cached.versions)
-        try:
-            listing = await RegistryClient(remote).versions(address)
-        except UpstreamNotFound:
-            if cached is not None:
-                await cached.adelete()
-            return []
-        except UpstreamError as exc:
-            if cached is not None:
-                log.warning("Serving stale versions of %s: %s", address, exc)
-                return _versions_from_json(cached.versions)
-            raise web.HTTPBadGateway(reason=str(exc)) from exc
-        try:
-            await ProviderIndex.objects.aupdate_or_create(
-                remote=remote,
-                hostname=address.hostname,
-                namespace=address.namespace,
-                provider_type=address.type,
-                defaults={"versions": _versions_to_json(listing), "fetched_at": now},
-            )
-        except IntegrityError:
-            pass  # A concurrent request stored the same listing.
+        if cached is None:
+            return await _refresh_listing(remote, address)
+        listing = _versions_from_json(cached.versions)
+        age = timezone.now() - cached.fetched_at
+        ttl = remote.metadata_ttl if listing else min(remote.metadata_ttl, NEGATIVE_TTL)
+        missing = wanted is not None and all(v.version != wanted for v in listing)
+        if missing and age > timedelta(seconds=NEGATIVE_TTL):
+            try:
+                return await _refresh_listing(remote, address)
+            except web.HTTPBadGateway:
+                return listing
+        if age > timedelta(seconds=ttl):
+            _in_background(_refresh_listing(remote, address), f"refreshing {address}")
         return listing
 
     async def _provider_version(self, source: _Source, version: str) -> ProviderVersion:
@@ -243,24 +267,13 @@ class TofuMirror(Handler):
             if remote.require_signatures and not existing.signing_key_fingerprint:
                 raise web.HTTPBadGateway(reason=f"{source.address} {version} is unsigned")
             return existing
-        listed = {v.version: v for v in await self._listing(remote, source.address)}
-        upstream = listed.get(version)
+        listing = await self._listing(remote, source.address, wanted=version)
+        upstream = next((v for v in listing if v.version == version), None)
         if upstream is None or not protocols_supported(upstream.protocols):
             raise PathNotResolved(f"{source.address} {version}")
-        try:
-            provider_version = await fetch_provider_version(remote, source.address, upstream)
-        except UpstreamNotFound as exc:
-            raise PathNotResolved(str(exc)) from exc
-        except (UpstreamError, SignatureError) as exc:
-            log.warning("Refusing %s %s: %s", source.address, version, exc)
-            raise web.HTTPBadGateway(reason=str(exc)) from exc
-        try:
-            await provider_version.asave()
-        except IntegrityError:
-            return await ProviderVersion.objects.aget(
-                **_address_filter(source.address), version=version, _pulp_domain=get_domain()
-            )
-        return provider_version
+        listed: UpstreamVersion = upstream
+        key = (get_domain_pk(), str(source.address), version)
+        return await _VERSIONS.run(key, lambda: _verify_and_store(remote, source.address, listed))
 
     @staticmethod
     async def _package(
@@ -333,6 +346,91 @@ class TofuMirror(Handler):
                 content_artifact=content_artifact, remote=remote
             )
         return remote_artifact
+
+
+async def _refresh_listing(remote: TofuRemote, address: ProviderAddress) -> list[UpstreamVersion]:
+    """Fetch a provider's versions and cache them; concurrent callers share one fetch.
+
+    An upstream 404 is cached as an empty listing. Raises ``HTTPBadGateway`` when the
+    upstream fails; callers holding a stale listing serve that instead.
+    """
+    key = (remote.pk, str(address))
+    return await _LISTINGS.run(key, lambda: _fetch_and_store_listing(remote, address))
+
+
+async def _fetch_and_store_listing(
+    remote: TofuRemote, address: ProviderAddress
+) -> list[UpstreamVersion]:
+    try:
+        listing = await RegistryClient(remote).versions(address)
+    except UpstreamNotFound:
+        listing = []
+    except UpstreamError as exc:
+        log.warning("Listing %s failed: %s", address, exc)
+        raise web.HTTPBadGateway(reason=str(exc)) from exc
+    try:
+        await ProviderIndex.objects.aupdate_or_create(
+            remote=remote,
+            hostname=address.hostname,
+            namespace=address.namespace,
+            provider_type=address.type,
+            defaults={"versions": _versions_to_json(listing), "fetched_at": timezone.now()},
+        )
+    except IntegrityError:
+        pass  # Another worker stored the same listing.
+    return listing
+
+
+async def _verify_and_store(
+    remote: TofuRemote, address: ProviderAddress, upstream: UpstreamVersion
+) -> ProviderVersion:
+    """Verify a version's checksums upstream and save them, or return the saved row."""
+    try:
+        provider_version = await fetch_provider_version(remote, address, upstream)
+    except UpstreamNotFound as exc:
+        raise PathNotResolved(str(exc)) from exc
+    except (UpstreamError, SignatureError) as exc:
+        log.warning("Refusing %s %s: %s", address, upstream.version, exc)
+        raise web.HTTPBadGateway(reason=str(exc)) from exc
+    try:
+        await provider_version.asave()
+    except IntegrityError:
+        return await ProviderVersion.objects.aget(
+            **_address_filter(address), version=upstream.version, _pulp_domain=get_domain()
+        )
+    return provider_version
+
+
+def _in_background(work: "Coroutine[object, object, object]", what: str) -> None:
+    """Run ``work`` detached from the request; log, never raise, its failure."""
+    task = asyncio.ensure_future(work)
+    _BACKGROUND.add(task)
+
+    def finished(done: "asyncio.Future[object]") -> None:
+        _BACKGROUND.discard(task)
+        if not done.cancelled() and (exc := done.exception()) is not None:
+            log.warning("Background %s failed: %s", what, exc)
+
+    task.add_done_callback(finished)
+
+
+def _archive_lock(package_pk: object) -> asyncio.Lock:
+    """The lock that serializes first downloads of one package within this process."""
+    lock = _ARCHIVE_LOCKS.get(package_pk)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ARCHIVE_LOCKS[package_pk] = lock
+    return lock
+
+
+# Seconds an upstream "no such provider" or a missing version stays cached.
+NEGATIVE_TTL = 60
+
+_LISTINGS: SingleFlight[list[UpstreamVersion]] = SingleFlight()
+_VERSIONS: SingleFlight[ProviderVersion] = SingleFlight()
+_BACKGROUND: set["asyncio.Task[object]"] = set()
+# Weak values: a lock lives only while some request holds or awaits it.
+_ARCHIVE_LOCKS: "weakref.WeakValueDictionary[object, asyncio.Lock]" = weakref.WeakValueDictionary()
 
 
 def _archive_for(

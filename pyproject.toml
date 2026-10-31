@@ -87,6 +87,9 @@ exclude = ["^pulp_tofu/app/migrations/", "^docs/", "^\\.ci/"]
 
 [tool.django-stubs]
 django_settings_module = "pulp_dev_settings"
+# pulpcore's settings come from DjangoDynaconf, whose lazy object the plugin cannot
+# always enumerate, so a real setting is sometimes reported missing between runs.
+strict_settings = false
 
 # pulpcore ships no py.typed; mypy reads its source so Django model fields resolve.
 [[tool.mypy.overrides]]

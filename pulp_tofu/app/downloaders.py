@@ -8,6 +8,8 @@ request from the last byte handed to ``handle_data``, so the client stream, the 
 file and the running digests all continue from the same offset.
 """
 
+import asyncio
+import logging
 from collections.abc import Mapping
 from typing import Any, override
 
@@ -16,8 +18,17 @@ from pyhaul import ContentRangeError, is_weak_validator, parse_etag
 from pyhaul.content_range import parse_content_range
 
 from pulpcore.plugin.download import DownloadResult, HttpDownloader
+from pulpcore.plugin.exceptions import TimeoutException
+
+from .retry import is_retryable, retry_delay
+
+log = logging.getLogger(__name__)
 
 _CHUNK = 1024 * 1024
+
+# Seconds without a byte before a transfer counts as stalled, when the remote sets no
+# sock_read_timeout. A stall is retried, and the retry resumes.
+STALL_TIMEOUT = 60.0
 
 
 class ResumeRefusedError(Exception):
@@ -28,8 +39,12 @@ class ResumingHttpDownloader(HttpDownloader):
     """``HttpDownloader`` that resumes retries with ``Range`` and ``If-Range``.
 
     ``total_timeout`` is the remote's own setting. When it is unset the transfer has no
-    overall deadline; the session's connect and read timeouts still apply, so a stalled
-    upstream fails while a slow large archive keeps going.
+    overall deadline, only the connect timeout and a read-stall timeout, so a slow large
+    archive keeps going while a stalled one fails and resumes.
+
+    Retries are bounded by attempts that make no progress: an attempt that delivered
+    bytes resets the count, so a long transfer over a flaky link keeps resuming while a
+    dead upstream gives up after ``max_retries`` fruitless tries.
     """
 
     def __init__(self, *args: Any, total_timeout: float | None = None, **kwargs: Any) -> None:
@@ -40,10 +55,29 @@ class ResumingHttpDownloader(HttpDownloader):
         self._length: int | None = None
 
     @override
-    def _ensure_no_broken_file(self) -> None:
-        # The base class discards the partial file before each attempt; a resumed
-        # attempt appends to it, so it stays.
-        return
+    async def run(self, extra_data: Mapping[str, Any] | None = None) -> DownloadResult:
+        never_retry = tuple((extra_data or {}).get("disable_retry_list", ()))
+        fruitless = 0
+        async with self.semaphore:
+            while True:
+                before = self._delivered
+                try:
+                    return await self._run(extra_data=extra_data)
+                except TimeoutError as exc:
+                    error: BaseException = TimeoutException(self.url)
+                    error.__cause__ = exc
+                except Exception as exc:  # noqa: BLE001 -- classified just below
+                    error = exc
+                if isinstance(error, never_retry) or not is_retryable(error):
+                    raise error
+                fruitless = 0 if self._delivered > before else fruitless + 1
+                if fruitless > self.max_retries:
+                    raise error
+                delay = retry_delay(fruitless, error)
+                log.info(
+                    "Retrying %s at byte %d in %.1fs: %s", self.url, self._delivered, delay, error
+                )
+                await asyncio.sleep(delay)
 
     @override
     async def _run(self, extra_data: Mapping[str, Any] | None = None) -> DownloadResult:
@@ -63,7 +97,7 @@ class ResumingHttpDownloader(HttpDownloader):
             total=self._total_timeout,
             connect=session_timeout.connect,
             sock_connect=session_timeout.sock_connect,
-            sock_read=session_timeout.sock_read,
+            sock_read=session_timeout.sock_read or STALL_TIMEOUT,
         )
         resuming = self._delivered > 0
         if resuming:
