@@ -16,6 +16,25 @@ registry. If the registry fails, the last list keeps being served. A registry's 
 provider" is remembered for 60 seconds, so retrying clients do not each reach the
 registry.
 
+## HTTP caching of registry responses
+
+Small registry documents (service discovery, version lists, download documents,
+checksums and their signatures) are also cached by HTTP rules, as a shared cache would cache them. `Cache-Control: max-age`
+or `Expires` sets how long a response stays fresh. A `no-store` or `private` response is
+not kept. A `no-cache` response, or one with no freshness, is kept and revalidated with
+`If-None-Match` or `If-Modified-Since`, so an unchanged listing costs the registry a
+304 rather than a body. A 404 is kept for its `max-age`, at most 60 seconds. Pulp caps
+every lifetime, so a registry that marks a listing fresh for a year cannot hide new
+releases.
+
+## Retries
+
+Pulp retries a registry request or archive download that failed with 429, a 5xx status
+or a transport error. It waits as long as `Retry-After` asks, and gives up when the
+registry asks for more than 30 seconds, because a client is waiting. Otherwise it
+waits a random time below a ceiling that starts at half a second and doubles with
+each failure, up to 10 seconds.
+
 ## Concurrent first requests
 
 When many clients ask for the same uncached provider at once, one request per Pulp
