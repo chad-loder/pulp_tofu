@@ -9,5 +9,9 @@ include pyproject.toml
 include requirements.txt
 include unittest_requirements.txt
 exclude releasing.md
+include pulp_tofu/app/webserver_snippets/*
+recursive-include pulp_tofu/tests/unit/fixtures *
+exclude pyrightconfig.json
+recursive-exclude dev *
 
 exclude .gitleaks.toml

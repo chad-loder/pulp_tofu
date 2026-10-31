@@ -1,0 +1,26 @@
+"""Content-app routes for the provider network mirror protocol.
+
+pulpcore's content app imports ``<plugin>.app.content`` at startup. Routes register in
+order and aiohttp takes the first match, so ``index.json`` precedes ``{version}.json``.
+"""
+
+from aiohttp import web
+from django.conf import settings
+
+from pulpcore.plugin.content import app
+
+from .mirror import TofuMirror
+from .models import MIRROR_PATH_PREFIX
+
+PREFIX = f"{MIRROR_PATH_PREFIX}{{pulp_domain}}/" if settings.DOMAIN_ENABLED else MIRROR_PATH_PREFIX
+PROVIDER = PREFIX + "{base_path:.+}/{hostname}/{namespace}/{provider_type}/"
+
+mirror = TofuMirror()
+
+app.add_routes(
+    [
+        web.get(PROVIDER + "index.json", mirror.index),
+        web.get(PROVIDER + "{version}.json", mirror.version),
+        web.get(PROVIDER + "{version}/{filename}", mirror.archive),
+    ]
+)

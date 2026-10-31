@@ -1,104 +1,257 @@
-"""
-Check `Plugin Writer's Guide`_ for more details.
-
-.. _Plugin Writer's Guide:
-    https://pulpproject.org/pulpcore/docs/dev/
-"""
+"""Content, remote, repository and distribution models for OpenTofu providers."""
 
 from logging import getLogger
+from typing import TYPE_CHECKING, TypedDict, override
 
+from aiohttp import web
 from django.db import models
+from yarl import URL
 
 from pulpcore.plugin.models import (
+    BaseModel,
     Content,
-    ContentArtifact,
     Distribution,
-    Publication,
     Remote,
     Repository,
+    RepositoryContent,
 )
-from pulpcore.plugin.util import get_domain_pk
+from pulpcore.plugin.repo_version_utils import remove_duplicates, validate_repo_version
+from pulpcore.plugin.util import get_domain, get_domain_pk
+
+from .protocol import ProviderAddress
+
+if TYPE_CHECKING:
+    from pulpcore.plugin.models import ContentArtifact, RepositoryVersion, Task
 
 logger = getLogger(__name__)
 
+MIRROR_PATH_PREFIX = "/pulp/tofu/"
 
-class TofuContent(Content):
+
+class ArchiveRecord(TypedDict):
+    """One platform's archive as recorded in ``ProviderVersion.archives``."""
+
+    filename: str
+    sha256: str
+    size: int | None
+
+
+class ProviderVersion(Content):
+    """The signed checksums for one version of a provider.
+
+    ``shasums`` verified against ``shasums_signature`` when the version was first fetched;
+    ``archives`` maps ``os_arch`` to the archive that ``shasums`` lists for it.
     """
-    The "tofu" content type.
 
-    Define fields you need for your new content type and
-    specify uniqueness constraint to identify unit of this type.
+    TYPE = "provider_version"
+    repo_key_fields = ("hostname", "namespace", "provider_type", "version")  # type: ignore[assignment]
 
-    For example::
-
-        field1 = models.TextField()
-        field2 = models.IntegerField()
-        field3 = models.CharField()
-
-        class Meta:
-            default_related_name = "%(app_label)s_%(model_name)s"
-            unique_together = ("field1", "field2")
-    """
-
-    TYPE = "tofu"
-
-    name = models.CharField(blank=False, null=False)
+    hostname = models.TextField()
+    namespace = models.TextField()
+    provider_type = models.TextField()
+    version = models.TextField()
+    protocols = models.JSONField(default=list)
+    shasums = models.BinaryField()
+    shasums_signature = models.BinaryField()
+    signing_key_fingerprint = models.TextField(blank=True, default="")
+    archives = models.JSONField(default=dict)
     _pulp_domain = models.ForeignKey("core.Domain", default=get_domain_pk, on_delete=models.PROTECT)
 
-    class Meta:
-        default_related_name = "%(app_label)s_%(model_name)s"
-        unique_together = ("name", "_pulp_domain")
+    @property
+    def address(self) -> ProviderAddress:
+        """The provider's source address."""
+        return ProviderAddress(
+            hostname=self.hostname, namespace=self.namespace, type=self.provider_type
+        )
 
-
-class TofuPublication(Publication):
-    """
-    A Publication for TofuContent.
-
-    Define any additional fields for your new publication if needed.
-    """
-
-    TYPE = "tofu"
+    def archive_records(self) -> dict[str, ArchiveRecord]:
+        """``archives`` with its JSON shape restored."""
+        records: dict[str, ArchiveRecord] = self.archives
+        return records
 
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
+        unique_together = ("hostname", "namespace", "provider_type", "version", "_pulp_domain")
+
+
+class ProviderPackage(Content):
+    """One platform's archive of a provider version.
+
+    ``h1`` is empty until Pulp holds the archive and has hashed its contents.
+    """
+
+    TYPE = "provider_package"
+    repo_key_fields = (  # type: ignore[assignment]
+        "hostname",
+        "namespace",
+        "provider_type",
+        "version",
+        "os",
+        "arch",
+    )
+
+    hostname = models.TextField()
+    namespace = models.TextField()
+    provider_type = models.TextField()
+    version = models.TextField()
+    os = models.TextField()
+    arch = models.TextField()
+    filename = models.TextField()
+    sha256 = models.CharField(max_length=64)
+    size = models.BigIntegerField(null=True)
+    h1 = models.TextField(blank=True, default="")
+    _pulp_domain = models.ForeignKey("core.Domain", default=get_domain_pk, on_delete=models.PROTECT)
+
+    @property
+    def relative_path(self) -> str:
+        """The archive's path below a distribution's base path."""
+        return (
+            f"{self.hostname}/{self.namespace}/{self.provider_type}/{self.version}/{self.filename}"
+        )
+
+    class Meta:
+        default_related_name = "%(app_label)s_%(model_name)s"
+        unique_together = (
+            "hostname",
+            "namespace",
+            "provider_type",
+            "version",
+            "os",
+            "arch",
+            "sha256",
+            "_pulp_domain",
+        )
 
 
 class TofuRemote(Remote):
-    """
-    A Remote for TofuContent.
+    """An upstream OpenTofu provider registry.
 
-    Define any additional fields for your new remote if needed.
+    ``url`` is the registry's root, where service discovery starts. Downloads follow
+    ``policy``: ``on_demand`` stores each archive on first request, ``streamed`` never
+    stores archives.
     """
 
     TYPE = "tofu"
 
+    includes = models.JSONField(default=list)
+    excludes = models.JSONField(default=list)
+    metadata_ttl = models.PositiveIntegerField(default=3600)
+    require_signatures = models.BooleanField(default=False)
+
+    @property
+    def hostname(self) -> str:
+        """The registry hostname as it appears in provider addresses, with a non-443 port."""
+        url = URL(self.url)
+        host = (url.host or "").lower()
+        return f"{host}:{url.explicit_port}" if url.explicit_port not in (None, 443) else host
+
+    @override
+    def get_remote_artifact_url(
+        self, relative_path: str | None = None, request: web.Request | None = None
+    ) -> str:
+        # Archive URLs come from the upstream download document, never from request paths.
+        raise NotImplementedError("pulp_tofu archives carry their upstream URL")
+
+    @override
+    def get_remote_artifact_content_type(self, relative_path: str | None = None) -> None:
+        return None
+
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
+        permissions = [
+            ("manage_roles_tofuremote", "Can manage roles on tofu remotes"),
+        ]
+
+
+class ProviderIndex(BaseModel):
+    """A remote's cached ``versions`` listing for one provider.
+
+    ``versions`` holds ``{"version", "protocols", "platforms": [{"os", "arch"}]}`` entries.
+    """
+
+    remote = models.ForeignKey(TofuRemote, on_delete=models.CASCADE, related_name="indexes")
+    hostname = models.TextField()
+    namespace = models.TextField()
+    provider_type = models.TextField()
+    versions = models.JSONField(default=list)
+    fetched_at = models.DateTimeField()
+
+    class Meta:
+        default_related_name = "%(app_label)s_%(model_name)s"
+        unique_together = ("remote", "hostname", "namespace", "provider_type")
 
 
 class TofuRepository(Repository):
-    """
-    A Repository for TofuContent.
-
-    Define any additional fields for your new repository if needed.
-    """
+    """A repository of provider versions and the archives pulled through for them."""
 
     TYPE = "tofu"
+    CONTENT_TYPES = [ProviderVersion, ProviderPackage]
+    REMOTE_TYPES = [TofuRemote]
+    PULL_THROUGH_SUPPORTED = True
 
-    CONTENT_TYPES = [TofuContent]
+    @override
+    def finalize_new_version(self, new_version: "RepositoryVersion") -> None:
+        remove_duplicates(new_version)
+        validate_repo_version(new_version)
+
+    @override
+    async def async_pull_through_add_content(
+        self, content_artifact: "ContentArtifact"
+    ) -> "Task | None":
+        """Add a pulled package and its provider version in one new repository version."""
+        package = await ProviderPackage.objects.filter(
+            contentartifact__pk=content_artifact.pk
+        ).afirst()
+        if package is None:
+            return None
+        units = [package.pk]
+        version = await ProviderVersion.objects.filter(
+            hostname=package.hostname,
+            namespace=package.namespace,
+            provider_type=package.provider_type,
+            version=package.version,
+            _pulp_domain=get_domain(),
+        ).afirst()
+        if version is not None:
+            units.append(version.pk)
+        present = RepositoryContent.objects.filter(
+            repository=self, content__in=units, version_removed__isnull=True
+        )
+        if await present.acount() == len(units):
+            return None
+        # pulpcore.plugin.tasking loads models on import, so it cannot load with this module.
+        from pulpcore.plugin.tasking import aadd_and_remove, adispatch
+
+        body = {"repository_pk": self.pk, "add_content_units": units, "remove_content_units": []}
+        task: Task = await adispatch(
+            aadd_and_remove, kwargs=body, exclusive_resources=[self], immediate=True
+        )
+        return task
 
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
+        permissions = [
+            ("modify_tofurepository", "Can modify content of the repository"),
+            ("repair_tofurepository", "Can repair repository versions"),
+            ("manage_roles_tofurepository", "Can manage roles on tofu repositories"),
+        ]
 
 
 class TofuDistribution(Distribution):
-    """
-    A Distribution for TofuContent.
+    """Serves the provider network mirror protocol below ``/pulp/tofu/<base_path>/``."""
 
-    Define any additional fields for your new distribution if needed.
-    """
+    TYPE = "tofu"  # type: ignore[assignment]
 
-    TYPE = "tofu"
+    @override
+    def content_handler(self, path: str) -> web.Response:  # pyright: ignore[reportIncompatibleMethodOverride]
+        # The generic content route would proxy arbitrary paths to the remote.
+        return web.Response(
+            status=404,
+            text=f"OpenTofu mirrors are served below {MIRROR_PATH_PREFIX}{self.base_path}/\n",
+        )
 
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
+        permissions = [
+            ("manage_roles_tofudistribution", "Can manage roles on tofu distributions"),
+        ]
