@@ -115,9 +115,14 @@ def test_corrupt_archive_is_never_stored(mirror: Mirror) -> None:
     assert (clean.status, clean.body == data) == (200, True)
 
 
+# Bytes before the end where the upstream cuts an archive: past pulpcore's first 1 MiB
+# read, so bytes have reached the client before the cut.
+CUT_BEFORE_END = 100_000
+
+
 def test_upstream_cut_mid_archive_resumes_the_same_stream(mirror: Mirror) -> None:
     name, data = _archive(mirror)
-    mirror.registry.state.truncate_archive_after = len(data) - 100_000
+    mirror.registry.state.truncate_archive_after = len(data) - CUT_BEFORE_END
     mirror.registry.state.truncate_once = True
     response = mirror.get(f"1.0.0/{name}")
     assert (response.status, response.complete) == (200, True)
@@ -128,8 +133,7 @@ def test_upstream_cut_mid_archive_resumes_the_same_stream(mirror: Mirror) -> Non
 def test_upstream_cut_without_validator_ends_the_stream(mirror: Mirror) -> None:
     name, data = _archive(mirror)
     mirror.registry.state.archive_etag = False
-    # Past pulpcore's first 1 MiB read, so bytes have reached the client before the cut.
-    mirror.registry.state.truncate_archive_after = len(data) - 100_000
+    mirror.registry.state.truncate_archive_after = len(data) - CUT_BEFORE_END
     mirror.registry.state.truncate_once = True
     response = mirror.get(f"1.0.0/{name}")
     assert not response.complete, (len(response.body), len(data))

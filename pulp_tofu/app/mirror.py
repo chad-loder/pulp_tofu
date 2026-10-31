@@ -143,11 +143,7 @@ class TofuMirror(Handler):
         relative_path = package.relative_path
         headers = self.response_headers(relative_path, source.distribution)
 
-        stored = (
-            await ContentArtifact.objects.select_related("artifact")
-            .filter(content=package, artifact__isnull=False)
-            .afirst()
-        )
+        stored = await _stored_archive(package)
         if stored is not None:
             if source.repository is not None:
                 await source.repository.async_pull_through_add_content(stored)
@@ -161,11 +157,7 @@ class TofuMirror(Handler):
             return await self._pull(request, headers, remote, source, package, platform, record)
         # One request per archive downloads it; the others wait, then serve what it stored.
         async with _archive_lock(package.pk):
-            stored = (
-                await ContentArtifact.objects.select_related("artifact")
-                .filter(content=package, artifact__isnull=False)
-                .afirst()
-            )
+            stored = await _stored_archive(package)
             if stored is not None:
                 return await self._serve_content_artifact(stored, headers, request)
             response = await self._pull(request, headers, remote, source, package, platform, record)
@@ -417,6 +409,16 @@ def _in_background(work: "Coroutine[object, object, object]", what: str) -> None
             log.warning("Background %s failed: %s", what, exc)
 
     task.add_done_callback(finished)
+
+
+async def _stored_archive(package: ProviderPackage) -> ContentArtifact | None:
+    """The package's content artifact, if Pulp holds its archive."""
+    stored: ContentArtifact | None = (
+        await ContentArtifact.objects.select_related("artifact")
+        .filter(content=package, artifact__isnull=False)
+        .afirst()
+    )
+    return stored
 
 
 def _archive_lock(package_pk: object) -> asyncio.Lock:

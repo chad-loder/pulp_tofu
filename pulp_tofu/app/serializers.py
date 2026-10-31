@@ -13,16 +13,21 @@ from pulpcore.plugin.models import Remote
 from . import models
 from .signing import parse_fingerprint
 
-_PROVIDER_FIELDS = ("hostname", "namespace", "provider_type", "version")
 
+class _ProviderAddressFields(serializers.Serializer[object]):
+    """The fields that name a provider version, shared by both content serializers."""
 
-class ProviderVersionSerializer(platform.NoArtifactContentSerializer):
-    """A provider version and its verified checksums."""
+    FIELDS = ("hostname", "namespace", "provider_type", "version")
 
     hostname = serializers.CharField(read_only=True, help_text=_("Origin registry hostname."))
     namespace = serializers.CharField(read_only=True, help_text=_("Provider namespace."))
     provider_type = serializers.CharField(read_only=True, help_text=_("Provider type."))
     version = serializers.CharField(read_only=True, help_text=_("Provider version."))
+
+
+class ProviderVersionSerializer(_ProviderAddressFields, platform.NoArtifactContentSerializer):
+    """A provider version and its verified checksums."""
+
     protocols = serializers.ListField(
         child=serializers.CharField(),
         read_only=True,
@@ -39,7 +44,7 @@ class ProviderVersionSerializer(platform.NoArtifactContentSerializer):
 
     class Meta:
         fields = platform.NoArtifactContentSerializer.Meta.fields + (
-            *_PROVIDER_FIELDS,
+            *_ProviderAddressFields.FIELDS,
             "protocols",
             "signing_key_fingerprint",
             "archives",
@@ -47,7 +52,7 @@ class ProviderVersionSerializer(platform.NoArtifactContentSerializer):
         model = models.ProviderVersion
 
 
-class ProviderPackageSerializer(platform.SingleArtifactContentSerializer):
+class ProviderPackageSerializer(_ProviderAddressFields, platform.SingleArtifactContentSerializer):
     """One platform's archive of a provider version."""
 
     # pulpcore sets allow_null on the field class, which the schema generator does not
@@ -57,10 +62,6 @@ class ProviderPackageSerializer(platform.SingleArtifactContentSerializer):
         help_text=_("The stored archive; null until Pulp has downloaded it."),
     )
 
-    hostname = serializers.CharField(read_only=True, help_text=_("Origin registry hostname."))
-    namespace = serializers.CharField(read_only=True, help_text=_("Provider namespace."))
-    provider_type = serializers.CharField(read_only=True, help_text=_("Provider type."))
-    version = serializers.CharField(read_only=True, help_text=_("Provider version."))
     os = serializers.CharField(read_only=True, help_text=_("Operating system."))
     arch = serializers.CharField(read_only=True, help_text=_("CPU architecture."))
     filename = serializers.CharField(read_only=True, help_text=_("Archive filename."))
@@ -72,7 +73,7 @@ class ProviderPackageSerializer(platform.SingleArtifactContentSerializer):
 
     class Meta:
         fields = platform.SingleArtifactContentSerializer.Meta.fields + (
-            *_PROVIDER_FIELDS,
+            *_ProviderAddressFields.FIELDS,
             "os",
             "arch",
             "filename",
