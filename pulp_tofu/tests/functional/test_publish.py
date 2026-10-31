@@ -1,8 +1,11 @@
+import base64
 import hashlib
 import io
 import json
 import secrets
+import ssl
 import tarfile
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -271,6 +274,38 @@ def test_unsigned_release_is_signed_by_the_namespace_signing_service(
     signer = verify_sha256sums(sums, signature, [service.public_key])
     assert signer.fingerprint == service.pubkey_fingerprint.lower()
     assert hashlib.sha256(release.archives[document["filename"]]).hexdigest() in sums.decode()
+
+
+def test_release_published_from_uploaded_artifacts(
+    publisher: Publisher,
+    release: Release,
+    provider_type: str,
+    pulpcore_bindings: Any,
+    bindings_cfg: Any,
+) -> None:
+    def artifact(name: str, data: bytes) -> str:
+        # As pulp-glue uploads: reuse an artifact Pulp already has.
+        found = pulpcore_bindings.ArtifactsApi.list(sha256=hashlib.sha256(data).hexdigest())
+        if found.results:
+            return str(found.results[0].pulp_href)
+        return str(pulpcore_bindings.ArtifactsApi.create(file=(name, data)).pulp_href)
+
+    hrefs = {name: artifact(name, data) for name, data in _files(provider_type, "1.0.0", release)}
+    login = f"{bindings_cfg.username}:{bindings_cfg.password}".encode()
+    request = urllib.request.Request(
+        f"{PULP_URL}{publisher.namespace.pulp_href}publish/",
+        data=json.dumps({"artifacts": hrefs}).encode(),
+        headers={
+            "Authorization": "Basic " + base64.b64encode(login).decode(),
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    context = ssl.create_default_context(cafile=str(E2E / "certs" / "ca.crt"))
+    with urllib.request.urlopen(request, context=context, timeout=60) as response:
+        publisher.monitor_task(json.loads(response.read())["task"])
+    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    assert fetch(f"{base}/versions").status == 200
 
 
 def test_unsigned_release_without_a_signing_service_is_refused(

@@ -12,7 +12,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import mixins
 from rest_framework.decorators import action
 from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
-from rest_framework.parsers import MultiPartParser
+from rest_framework.parsers import JSONParser, MultiPartParser
 from rest_framework.request import Request
 
 from pulpcore.plugin import viewsets as core
@@ -351,6 +351,8 @@ class TofuNamespaceViewSet(
 
     @extend_schema(
         description="Publish a provider release to the namespace.",
+        # Multipart only: generated clients prefer a JSON body and would drop the files.
+        # JSON bodies naming artifacts are parsed all the same.
         request={"multipart/form-data": serializers.ProviderReleaseSerializer},
         responses={202: AsyncOperationResponseSerializer},
     )
@@ -358,7 +360,7 @@ class TofuNamespaceViewSet(
         detail=True,
         methods=["post"],
         serializer_class=serializers.ProviderReleaseSerializer,
-        parser_classes=[MultiPartParser],
+        parser_classes=[MultiPartParser, JSONParser],
         # A release job may authenticate with a registry token.
         authentication_classes=registry_authentication_classes(),
     )
@@ -425,7 +427,7 @@ class TofuNamespaceViewSet(
         detail=True,
         methods=["post"],
         serializer_class=serializers.ModuleReleaseSerializer,
-        parser_classes=[MultiPartParser],
+        parser_classes=[MultiPartParser, JSONParser],
         authentication_classes=registry_authentication_classes(),
     )
     def publish_module(self, request: Request, pk: str) -> core.OperationPostponedResponse:
@@ -549,11 +551,15 @@ def _upload_target(namespace: models.TofuNamespace) -> tuple[str, models.TofuRep
     return hostname, repository
 
 
-def _stored_artifact(upload: UploadedFile) -> Artifact:
+def _stored_artifact(upload: UploadedFile | Artifact) -> Artifact:
     """The artifact holding ``upload``, reusing one with the same digest.
 
-    Follows pulpcore's ``SingleArtifactContentUploadViewSet.init_content_data``.
+    Follows pulpcore's ``SingleArtifactContentUploadViewSet.init_content_data``. An
+    artifact the client uploaded first is used as it is.
     """
+    if isinstance(upload, Artifact):
+        upload.touch()
+        return upload
     artifact = Artifact.init_and_validate(upload)
     domain = get_domain()
     try:

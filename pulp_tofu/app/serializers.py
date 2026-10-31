@@ -1,5 +1,6 @@
 """REST API serializers for pulp_tofu."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from gettext import gettext as _
@@ -11,7 +12,8 @@ from rest_framework import serializers
 from yarl import URL
 
 from pulpcore.plugin import serializers as platform
-from pulpcore.plugin.models import Remote
+from pulpcore.plugin.models import Artifact, Remote
+from pulpcore.plugin.util import get_domain
 
 from . import models
 from .authentication import IssuedToken, issue_token
@@ -127,7 +129,22 @@ class ModuleReleaseSerializer(serializers.Serializer[object]):
     name = serializers.CharField(help_text=_("Module name, e.g. vpc in pulp.example/acme/vpc/aws."))
     system = serializers.CharField(help_text=_("Target system, e.g. aws."))
     version = serializers.CharField(help_text=_("SemVer 2.0 version without build metadata."))
-    file = serializers.FileField(help_text=_("A .tar.gz of the module directory."))
+    file = serializers.FileField(required=False, help_text=_("A .tar.gz of the module directory."))
+    artifact = platform.RelatedField(
+        view_name="artifacts-detail",
+        queryset=Artifact.objects.all(),
+        required=False,
+        help_text=_("The same package as an already uploaded artifact."),
+    )
+
+    @override
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        upload, artifact = attrs.get("file"), attrs.get("artifact")
+        if (upload is None) == (artifact is None):
+            raise serializers.ValidationError(_("Send either file or artifact."))
+        if isinstance(artifact, Artifact) and artifact.pulp_domain != get_domain():
+            raise serializers.ValidationError({"artifact": _("Unknown artifact.")})
+        return attrs
 
     def validate_name(self, name: str) -> str:
         if not is_module_name(name):
@@ -149,8 +166,8 @@ class ModuleReleaseSerializer(serializers.Serializer[object]):
     def uploaded_module(self) -> "UploadedModule":
         """The validated upload; call after ``is_valid``."""
         data = self.validated_data
-        upload = data["file"]
-        if not isinstance(upload, UploadedFile):
+        upload = data.get("file") or data.get("artifact")
+        if not isinstance(upload, UploadedFile | Artifact):
             raise TypeError("ModuleReleaseSerializer is not validated")
         return UploadedModule(
             name=str(data["name"]),
@@ -167,7 +184,7 @@ class UploadedModule:
     name: str
     system: str
     version: str
-    file: UploadedFile
+    file: UploadedFile | Artifact
 
 
 class TofuRemoteSerializer(platform.RemoteSerializer):
@@ -585,29 +602,31 @@ class TofuTokenSerializer(platform.ModelSerializer):
 
 
 class ProviderReleaseSerializer(serializers.Serializer[object]):
-    """The files of one provider release, as GoReleaser writes them to ``dist/``."""
+    """The files of one provider release, as GoReleaser writes them to ``dist/``.
+
+    They arrive either as multipart ``files`` or as ``artifacts`` already uploaded,
+    which lets a client upload large archives in chunks first.
+    """
 
     files = serializers.ListField(
         child=serializers.FileField(),
-        allow_empty=False,
+        required=False,
         help_text=_(
             "The platform zips, SHA256SUMS, SHA256SUMS.sig and the optional manifest.json "
             "of one release, under their release filenames. Leave out the signature, or "
             "the signature and SHA256SUMS, to have the namespace's signing service sign."
         ),
     )
+    artifacts = serializers.DictField(
+        child=platform.RelatedField(view_name="artifacts-detail", queryset=Artifact.objects.all()),
+        required=False,
+        help_text=_("The same files as already uploaded artifacts, keyed by release filename."),
+    )
 
     @override
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
         """Sort the files into a release; read the small ones, which travel to the task."""
-        files = attrs["files"]
-        if not isinstance(files, list):
-            raise serializers.ValidationError({"files": _("Expected a list of files.")})
-        by_name: dict[str, UploadedFile] = {}
-        for upload in cast("list[object]", files):
-            if not isinstance(upload, UploadedFile):
-                raise serializers.ValidationError({"files": _("Expected a list of files.")})
-            by_name[str(upload.name)] = upload
+        by_name = _release_files(attrs)
         try:
             release = parse_release(list(by_name))
         except ReleaseError as exc:
@@ -616,10 +635,13 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
         def read(name: str | None) -> bytes | None:
             if name is None:
                 return None
-            upload = by_name[name]
-            if (upload.size or 0) > MAX_SMALL_FILE_BYTES:
+            source = by_name[name]
+            if (source.size or 0) > MAX_SMALL_FILE_BYTES:
                 raise serializers.ValidationError({"files": f"{name} is too large"})
-            return upload.read()
+            if isinstance(source, Artifact):
+                with source.file.open("rb") as stored:
+                    return bytes(stored.read())
+            return source.read()
 
         return {
             "release": UploadedRelease(
@@ -647,4 +669,24 @@ class UploadedRelease:
     shasums: bytes | None
     signature: bytes | None
     manifest: bytes | None
-    archives: dict[Platform, UploadedFile]
+    archives: dict[Platform, UploadedFile | Artifact]
+
+
+def _release_files(attrs: Mapping[str, object]) -> dict[str, UploadedFile | Artifact]:
+    """The release's files by name, from exactly one of ``files`` and ``artifacts``."""
+    files, artifacts = attrs.get("files"), attrs.get("artifacts")
+    if bool(files) == bool(artifacts):
+        raise serializers.ValidationError(_("Send either files or artifacts."))
+    by_name: dict[str, UploadedFile | Artifact] = {}
+    if isinstance(files, list):
+        for upload in cast("list[object]", files):
+            if not isinstance(upload, UploadedFile):
+                raise serializers.ValidationError({"files": _("Expected a list of files.")})
+            by_name[str(upload.name)] = upload
+    elif isinstance(artifacts, dict):
+        domain = get_domain()
+        for name, artifact in cast("dict[object, object]", artifacts).items():
+            if not isinstance(artifact, Artifact) or artifact.pulp_domain != domain:
+                raise serializers.ValidationError({"artifacts": _("Unknown artifact.")})
+            by_name[str(name)] = artifact
+    return by_name

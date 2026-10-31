@@ -57,6 +57,16 @@ without the signature and `SHA256SUMS`, and Pulp signs it; see
 [Sign Releases with Pulp](site:pulp_tofu/docs/admin/guides/signing/).
 | `terraform-provider-<type>_<version>_manifest.json` | no; without it the protocol is 5.0 |
 
+Large archives can be uploaded first, in chunks, through pulpcore's `uploads` or
+`artifacts` endpoints; the release then names them, keyed by release filename:
+
+```bash
+curl -u ci --json '{"artifacts": {"terraform-provider-widget_1.2.0_linux_amd64.zip": "<artifact href>", ...}}' \
+  "$PULP<namespace pulp_href>publish/"
+```
+
+`publish_module` likewise takes `artifact` in place of `file`.
+
 The request stores the archives and returns a task. The task fails if the signature
 does not verify against the keyring, or if the uploaded archives and the archives
 `SHA256SUMS` lists are not the same set with the same digests. Uploading a version that
