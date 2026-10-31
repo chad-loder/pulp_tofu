@@ -37,7 +37,6 @@ def parse_sha256(value: str) -> Sha256Hex | None:
 
 
 def zh_hash(sha256: Sha256Hex) -> ZhHash:
-    """Return the ``zh:`` hash for an archive's SHA-256."""
     return ZhHash(ZH_PREFIX + sha256)
 
 

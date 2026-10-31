@@ -13,7 +13,6 @@ from typing import NewType, NotRequired, Self, TypedDict, override
 
 JSON_CONTENT_TYPE = "application/json"
 
-# Provider protocol major versions this OpenTofu generation installs.
 SUPPORTED_PROTOCOL_MAJORS = frozenset({"5", "6"})
 
 # "os_arch", the key the network mirror protocol and registries use for a platform.
@@ -109,7 +108,6 @@ class ArchiveEntry(TypedDict):
 
 
 def index_document(versions: list[str]) -> bytes:
-    """Render ``index.json``."""
     return _dump({"versions": {version: {} for version in versions}})
 
 

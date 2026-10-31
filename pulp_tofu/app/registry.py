@@ -46,7 +46,6 @@ class _Throttler(Protocol):
 DISCOVERY_PATH = ".well-known/terraform.json"
 PROVIDERS_SERVICE = "providers.v1"
 
-# Upper bound on any registry JSON document or SHA256SUMS file read into memory.
 MAX_METADATA_BYTES = 16 * 1024 * 1024
 
 # Timeouts for metadata requests when the remote sets none. A healthy but busy registry
@@ -57,12 +56,11 @@ METADATA_CONNECT_TIMEOUT = 10.0
 METADATA_TOTAL_TIMEOUT = 120.0
 
 # pulpcore's Remote.DEFAULT_MAX_RETRIES, without importing models here.
-Remote_DEFAULT_MAX_RETRIES = 3
+DEFAULT_MAX_RETRIES = 3
 
 # Upstream version strings become path segments and stored fields: semver characters only.
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$")
 
-# Failures of the connection itself, as opposed to an HTTP error status.
 _TRANSPORT_ERRORS = (ClientConnectionError, ClientPayloadError, OSError, TimeoutError)
 
 
@@ -329,7 +327,6 @@ class RegistryClient:
             return session.providers_url
 
     async def versions(self, address: ProviderAddress) -> list[UpstreamVersion]:
-        """List a provider's versions."""
         url = await self._provider_url(address.namespace, address.type, "versions")
         return parse_versions(await self.fetch_json(url))
 
@@ -349,7 +346,6 @@ class RegistryClient:
         return (await self.providers_url()).joinpath(*segments)
 
     async def fetch_json(self, url: URL) -> object:
-        """Fetch and decode a JSON document."""
         body = await self.fetch_bytes(url)
         try:
             return cast("object", json.loads(body))
@@ -375,7 +371,7 @@ class RegistryClient:
 
     async def _fetch_with_retries(self, url: str) -> bytes:
         max_retries = self._remote.max_retries
-        attempts = (Remote_DEFAULT_MAX_RETRIES if max_retries is None else max_retries) + 1
+        attempts = (DEFAULT_MAX_RETRIES if max_retries is None else max_retries) + 1
         failures = 0
         while True:
             try:

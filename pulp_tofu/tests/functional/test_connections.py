@@ -4,8 +4,9 @@ import pytest
 
 from .conftest import Mirror
 
-# The pooled first attempt waits at most PROBE_READ_TIMEOUT (5 s) on a dead connection.
-DROP_BUDGET_SECONDS = 12.0
+# A silent drop costs one read timeout; the drop case shortens it on the remote.
+DROP_READ_TIMEOUT = 3.0
+DROP_BUDGET_SECONDS = DROP_READ_TIMEOUT + 5.0
 CLOSE_BUDGET_SECONDS = 3.0
 
 
@@ -16,6 +17,8 @@ CLOSE_BUDGET_SECONDS = 3.0
 def test_pooled_connections_reaped_while_idle_are_replaced(
     mirror: Mirror, mode: str, budget: float
 ) -> None:
+    if mode == "drop":
+        mirror.update_remote(sock_read_timeout=DROP_READ_TIMEOUT)
     state = mirror.registry.state
     state.idle_reap = mode  # type: ignore[assignment]
     state.idle_reap_after = 1.0

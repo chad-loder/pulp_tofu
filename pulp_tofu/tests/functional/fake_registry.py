@@ -44,7 +44,6 @@ class Release:
     signature: bytes
 
     def filename(self, os_name: str, arch: str) -> str:
-        """The archive filename for a platform."""
         (name,) = (n for n in self.archives if n.endswith(f"_{os_name}_{arch}.zip"))
         return name
 
@@ -261,7 +260,6 @@ def _handler(registry: FakeRegistry) -> type[BaseHTTPRequestHandler]:
                     socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
                 )
             elif mode == "drop":
-                # Hold the socket and never read it again; the peer hears nothing.
                 time.sleep(DROP_HOLD_SECONDS)
             self.close_connection = True
             return False

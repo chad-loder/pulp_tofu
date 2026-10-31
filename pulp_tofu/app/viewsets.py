@@ -172,7 +172,6 @@ class TofuRepositoryViewSet(core.RepositoryViewSet, ModifyRepositoryActionMixin,
     )
     @action(detail=True, methods=["post"], serializer_class=serializers.TofuSyncSerializer)
     def sync(self, request: Request, pk: str) -> core.OperationPostponedResponse:
-        """Dispatch a sync task."""
         repository = self.get_object()
         serializer = serializers.TofuSyncSerializer(
             data=request.data, context={"request": request, "repository_pk": pk}
