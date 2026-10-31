@@ -116,17 +116,22 @@ def _files(ptype: str, version: str, release: Release) -> list[tuple[str, bytes]
     ]
 
 
-def _release(registry: FakeRegistry, ptype: str) -> Release:
-    release = registry.release(ptype, "1.0.0")
-    assert release is not None
-    return release
+@pytest.fixture
+def registry(upstream: tuple[FakeRegistry, int, str]) -> FakeRegistry:
+    return upstream[0]
+
+
+@pytest.fixture
+def release(registry: FakeRegistry, provider_type: str) -> Release:
+    """Version 1.0.0 of the test's provider, signed by the namespace's key."""
+    found = registry.release(provider_type, "1.0.0")
+    assert found is not None
+    return found
 
 
 def test_published_release_is_served_by_the_registry(
-    publisher: Publisher, upstream: tuple[FakeRegistry, int, str], provider_type: str
+    publisher: Publisher, release: Release, provider_type: str
 ) -> None:
-    registry, _, _ = upstream
-    release = _release(registry, provider_type)
     publisher.publish(_files(provider_type, "1.0.0", release))
 
     base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
@@ -145,10 +150,8 @@ def test_published_release_is_served_by_the_registry(
 
 
 def test_a_published_version_cannot_change(
-    publisher: Publisher, upstream: tuple[FakeRegistry, int, str], provider_type: str
+    publisher: Publisher, registry: FakeRegistry, release: Release, provider_type: str
 ) -> None:
-    registry, _, _ = upstream
-    release = _release(registry, provider_type)
     publisher.publish(_files(provider_type, "1.0.0", release))
 
     [name, *_] = release.archives
@@ -161,12 +164,8 @@ def test_a_published_version_cannot_change(
 
 
 def test_release_signed_by_another_key_is_refused(
-    publisher: Publisher,
-    upstream: tuple[FakeRegistry, int, str],
-    provider_type: str,
+    publisher: Publisher, registry: FakeRegistry, release: Release, provider_type: str
 ) -> None:
-    registry, _, _ = upstream
-    release = _release(registry, provider_type)
     files = _files(provider_type, "1.0.0", signed_release(registry.other_key, release.archives))
     with pytest.raises(PulpTaskError) as error:
         publisher.publish(files)
@@ -176,10 +175,8 @@ def test_release_signed_by_another_key_is_refused(
 
 
 def test_archives_must_match_the_signed_checksums(
-    publisher: Publisher, upstream: tuple[FakeRegistry, int, str], provider_type: str
+    publisher: Publisher, release: Release, provider_type: str
 ) -> None:
-    registry, _, _ = upstream
-    release = _release(registry, provider_type)
     [name, *_] = release.archives
     tampered = Release({**release.archives, name: b"tampered"}, release.sums, release.signature)
     with pytest.raises(PulpTaskError) as error:
@@ -198,13 +195,12 @@ def test_a_distribution_with_a_remote_refuses_uploads(
 
 def test_release_job_publishes_with_a_publish_token(
     publisher: Publisher,
-    upstream: tuple[FakeRegistry, int, str],
+    release: Release,
     provider_type: str,
     tofu_bindings: Any,
     gen_object_with_cleanup: Callable[..., Any],
 ) -> None:
-    registry, _, _ = upstream
-    files = _files(provider_type, "1.0.0", _release(registry, provider_type))
+    files = _files(provider_type, "1.0.0", release)
 
     def token(scope: str) -> str:
         body = {"name": scope, "scope": scope, "namespaces": [publisher.namespace.pulp_href]}
