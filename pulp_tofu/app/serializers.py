@@ -3,9 +3,7 @@
 from gettext import gettext as _
 from typing import cast, override
 
-from django.conf import settings
 from rest_framework import serializers
-from yarl import URL
 
 from pulpcore.plugin import serializers as platform
 from pulpcore.plugin.models import Remote
@@ -231,12 +229,7 @@ class MirrorURLField(serializers.CharField):
     def to_representation(self, value: object) -> str:
         if not isinstance(value, models.TofuDistribution):
             raise TypeError(f"MirrorURLField serializes distributions, not {type(value)}")
-        # Same origin handling as pulpcore's BaseURLField; CONTENT_ORIGIN may be unset.
-        origin = cast("str | None", settings.CONTENT_ORIGIN)
-        url = URL((origin or "").rstrip("/") + models.MIRROR_PATH_PREFIX)
-        if settings.DOMAIN_ENABLED:
-            url = url / value.pulp_domain.name / ""
-        return str(url.joinpath(*value.base_path.strip("/").split("/"), ""))
+        return str(value.mirror_url())
 
 
 class TofuDistributionSerializer(platform.DistributionSerializer):

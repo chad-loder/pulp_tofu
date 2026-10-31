@@ -16,11 +16,12 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
 from rest_framework.views import APIView
+from yarl import URL
 
 from pulpcore.plugin.util import get_domain
 
 from .hashes import zh_hash
-from .models import MIRROR_PATH_PREFIX, ProviderPackage, ProviderVersion, TofuNamespace
+from .models import ProviderPackage, ProviderVersion, TofuNamespace
 from .protocol import Platform
 
 if TYPE_CHECKING:
@@ -30,12 +31,12 @@ PROVIDERS_SERVICE = "providers.v1"
 CHECKSUMS_SEGMENT = "_checksums"
 
 
-def registry_root() -> str:
-    """The registry API's path, with the domain segment when domains are enabled."""
-    prefix = "/" + str(settings.TOFU_REGISTRY_PATH_PREFIX).strip("/") + "/"
+def providers_url() -> URL:
+    """The providers.v1 API's path, with the domain segment when domains are enabled."""
+    segments = str(settings.TOFU_REGISTRY_PATH_PREFIX).strip("/").split("/")
     if settings.DOMAIN_ENABLED:
-        prefix += f"{settings.TOFU_REGISTRY_DOMAIN}/"
-    return prefix
+        segments.append(str(settings.TOFU_REGISTRY_DOMAIN))
+    return URL("/").joinpath(*segments, "v1", "providers", "")
 
 
 def _errors(status: int, message: str) -> Response:
@@ -46,9 +47,12 @@ class _RegistryView(APIView):
     """Base for registry endpoints: JSON only, authentication from the plugin's setting.
 
     Authorization is per namespace inside each view, so DRF's permission classes and
-    pulpcore's access policies do not apply here.
+    pulpcore's access policies do not apply here. The views stay out of Pulp's OpenAPI
+    schema, as pulp_container's registry views do: OpenTofu speaks this protocol, not
+    the generated bindings.
     """
 
+    schema = None
     renderer_classes = [JSONRenderer]
     permission_classes: list[Any] = []
 
@@ -100,7 +104,7 @@ class DiscoveryView(_RegistryView):
     def get(self, request: Request) -> Response:
         if not settings.TOFU_REGISTRY_ENABLED:
             return _errors(404, "Not Found")
-        return Response({PROVIDERS_SERVICE: f"{registry_root()}v1/providers/"})
+        return Response({PROVIDERS_SERVICE: str(providers_url())})
 
 
 class ProviderVersionsView(_RegistryView):
@@ -162,9 +166,9 @@ class ProviderDownloadView(_RegistryView):
             "os": os,
             "arch": arch,
             "filename": record["filename"],
-            "download_url": f"{base}{record['filename']}",
-            "shasums_url": f"{base}{CHECKSUMS_SEGMENT}/SHA256SUMS",
-            "shasums_signature_url": f"{base}{CHECKSUMS_SEGMENT}/SHA256SUMS.sig",
+            "download_url": str(base / record["filename"]),
+            "shasums_url": str(base.joinpath(CHECKSUMS_SEGMENT, "SHA256SUMS")),
+            "shasums_signature_url": str(base.joinpath(CHECKSUMS_SEGMENT, "SHA256SUMS.sig")),
             "shasum": record["sha256"],
             "signing_keys": {
                 "gpg_public_keys": [
@@ -187,15 +191,14 @@ class ProviderDownloadView(_RegistryView):
         return Response(document)
 
 
-def _content_base(namespace: TofuNamespace, provider_version: ProviderVersion) -> str:
+def _content_base(namespace: TofuNamespace, provider_version: ProviderVersion) -> URL:
     """The content-app URL of a provider version's directory in the namespace's mirror."""
     distribution = namespace.distribution
     assert distribution is not None
-    # CONTENT_ORIGIN may be unset, as pulpcore's BaseURLField allows.
-    origin = (cast("str | None", settings.CONTENT_ORIGIN) or "").rstrip("/")
-    domain = f"{namespace.pulp_domain.name}/" if settings.DOMAIN_ENABLED else ""
-    return (
-        f"{origin}{MIRROR_PATH_PREFIX}{domain}{distribution.base_path.strip('/')}/"
-        f"{provider_version.hostname}/{provider_version.namespace}/"
-        f"{provider_version.provider_type}/{provider_version.version}/"
+    return distribution.mirror_url().joinpath(
+        provider_version.hostname,
+        provider_version.namespace,
+        provider_version.provider_type,
+        provider_version.version,
+        "",
     )

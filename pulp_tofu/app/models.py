@@ -2,9 +2,10 @@
 
 from functools import partial
 from logging import getLogger
-from typing import TYPE_CHECKING, Literal, TypedDict, override
+from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
 
 from aiohttp import web
+from django.conf import settings
 from django.db import models
 from yarl import URL
 
@@ -325,12 +326,23 @@ class TofuDistribution(Distribution):
 
     TYPE = "tofu"  # type: ignore[assignment]
 
+    def mirror_url(self) -> URL:
+        """The network mirror's URL, ending in ``/``; relative when CONTENT_ORIGIN is unset.
+
+        Same origin handling as pulpcore's ``BaseURLField``.
+        """
+        origin = URL(cast("str | None", settings.CONTENT_ORIGIN) or "")
+        segments = MIRROR_PATH_PREFIX.strip("/").split("/")
+        if settings.DOMAIN_ENABLED:
+            segments.append(self.pulp_domain.name)
+        segments.extend(self.base_path.strip("/").split("/"))
+        return (origin if origin.absolute else URL("/")).joinpath(*segments, "")
+
     @override
     def content_handler(self, path: str) -> web.Response:  # pyright: ignore[reportIncompatibleMethodOverride]
         # The generic content route would proxy arbitrary paths to the remote.
         return web.Response(
-            status=404,
-            text=f"OpenTofu mirrors are served below {MIRROR_PATH_PREFIX}{self.base_path}/\n",
+            status=404, text=f"OpenTofu mirrors are served below {self.mirror_url().path}\n"
         )
 
     class Meta:

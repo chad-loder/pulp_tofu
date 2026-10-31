@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import NewType, NotRequired, Self, TypedDict, override
 
+from yarl import URL
+
 JSON_CONTENT_TYPE = "application/json"
 
 SUPPORTED_PROTOCOL_MAJORS = frozenset({"5", "6"})
@@ -118,7 +120,7 @@ def version_document(archives: dict[str, ArchiveEntry]) -> bytes:
 
 def archive_url(version: str, filename: str) -> str:
     """The archive URL relative to ``:version.json``, which sits beside the version directory."""
-    return f"{version}/{filename}"
+    return str(URL.build(path=version).joinpath(filename))
 
 
 def _dump(document: object) -> bytes:
