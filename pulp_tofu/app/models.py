@@ -380,11 +380,12 @@ class TofuDistribution(Distribution):
         Same origin handling as pulpcore's ``BaseURLField``.
         """
         origin = URL(cast("str | None", settings.CONTENT_ORIGIN) or "")
-        segments = MIRROR_PATH_PREFIX.strip("/").split("/")
-        if settings.DOMAIN_ENABLED:
-            segments.append(self.pulp_domain.name)
-        segments.extend(self.base_path.strip("/").split("/"))
-        return (origin if origin.absolute else URL("/")).joinpath(*segments, "")
+        prefix = (
+            origin.join(URL(MIRROR_PATH_PREFIX)) if origin.absolute else URL(MIRROR_PATH_PREFIX)
+        )
+        domain = [self.pulp_domain.name] if settings.DOMAIN_ENABLED else []
+        # joinpath splits base_path at its slashes into segments.
+        return prefix.joinpath(*domain, self.base_path, "")
 
     @override
     def content_handler(self, path: str) -> web.Response:  # pyright: ignore[reportIncompatibleMethodOverride]

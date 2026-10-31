@@ -40,7 +40,8 @@ def test_provider_parts_follow_opentofu_address_rules(value: str, part: bool, ty
         ("Pulp.Example", "pulp.example"),
         ("pulp.example:443", "pulp.example"),
         ("pulp.example:8443", "pulp.example:8443"),
-        ("pulp.example.", "pulp.example"),
+        ("Bücher.Example", "bücher.example"),
+        ("xn--bcher-kva.example", "bücher.example"),
     ],
 )
 def test_hostnames_compare_as_opentofu_compares_them(given: str, expected: str) -> None:

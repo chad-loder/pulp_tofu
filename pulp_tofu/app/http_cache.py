@@ -16,8 +16,9 @@ import time
 from collections import OrderedDict
 from collections.abc import Hashable
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
+from email.utils import parsedate_to_datetime, unquote
 from typing import Literal
+from urllib.request import parse_http_list
 
 from pyhaul import EntityTag, parse_etag
 from pyhaul.transport import TransportHeaders
@@ -162,11 +163,12 @@ def entity_tag(value: str | None) -> EntityTag | None:
 
 
 def _cache_control(value: str) -> dict[str, str | None]:
+    """Cache-Control directives by lowercase name; ``parse_http_list`` keeps quoted commas."""
     directives: dict[str, str | None] = {}
-    for part in value.split(","):
-        name, _, argument = part.strip().partition("=")
-        if name:
-            directives[name.lower()] = argument.strip('"') or None
+    for part in parse_http_list(value):
+        name, _, argument = part.partition("=")
+        if name := name.strip():
+            directives[name.lower()] = unquote(argument.strip()) or None
     return directives
 
 

@@ -24,6 +24,7 @@ def _entry(body: bytes = b"{}", **headers: str) -> CacheEntry:
         ([("Cache-Control", "max-age=60"), ("Age", "90")], None, (True, NOW)),
         ([("Cache-Control", "max-age=31536000")], None, (True, NOW + DAY)),
         ([("Cache-Control", "no-store, max-age=60")], None, (False, None)),
+        ([("Cache-Control", 'no-cache="Set-Cookie, Vary", max-age=60')], 60.0, (True, None)),
         ([("cache-control", "max-age=60"), ("Cache-Control", "private")], None, (False, None)),
         ([("Cache-Control", "no-cache")], 60.0, (True, None)),
         ([("Expires", "Thu, 01 Jan 1970 00:00:00 GMT")], None, (True, NOW)),

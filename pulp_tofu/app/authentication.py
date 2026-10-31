@@ -17,7 +17,7 @@ from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
 from django.utils import timezone
 from django.utils.module_loading import import_string
-from rest_framework.authentication import BaseAuthentication
+from rest_framework.authentication import BaseAuthentication, get_authorization_header
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.request import Request
 from rest_framework.settings import api_settings
@@ -60,9 +60,15 @@ class TofuTokenAuthentication(BaseAuthentication):
 
     @override
     def authenticate(self, request: Request) -> tuple[AbstractBaseUser, TofuToken] | None:
-        header = cast("str", request.META.get("HTTP_AUTHORIZATION", ""))
-        scheme, _, credential = header.partition(" ")
-        if scheme.lower() != "bearer" or not credential.startswith(TOKEN_PREFIX):
+        # As DRF's own TokenAuthentication reads the header.
+        parts = get_authorization_header(request).split()
+        if len(parts) != 2 or parts[0].lower() != b"bearer":
+            return None
+        try:
+            credential = parts[1].decode()
+        except UnicodeDecodeError:
+            return None
+        if not credential.startswith(TOKEN_PREFIX):
             return None
         prefix, _, secret = credential.removeprefix(TOKEN_PREFIX).partition("_")
         token = TofuToken.objects.select_related("user").filter(prefix=prefix).first()

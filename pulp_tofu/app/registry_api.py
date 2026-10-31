@@ -50,10 +50,9 @@ def registry_hostname() -> str | None:
 
 def service_url(service: Literal["providers", "modules"]) -> URL:
     """A v1 service's path, with the domain segment when domains are enabled."""
-    segments = str(settings.TOFU_REGISTRY_PATH_PREFIX).strip("/").split("/")
-    if settings.DOMAIN_ENABLED:
-        segments.append(str(settings.TOFU_REGISTRY_DOMAIN))
-    return URL("/").joinpath(*segments, "v1", service, "")
+    prefix = URL("/").join(URL(str(settings.TOFU_REGISTRY_PATH_PREFIX)))
+    domain = [str(settings.TOFU_REGISTRY_DOMAIN)] if settings.DOMAIN_ENABLED else []
+    return prefix.joinpath(*domain, "v1", service, "")
 
 
 def _errors(status: int, message: str) -> Response:
@@ -183,7 +182,7 @@ class ModuleDownloadView(_RegistryView):
         if module is None:
             return _errors(404, "Not Found")
         location = _content_url(
-            found, found.distribution.mirror_url().joinpath(*module.relative_path.split("/"))
+            found, found.distribution.mirror_url().joinpath(module.relative_path)
         )
         return Response({"location": location}, headers={"X-Terraform-Get": location})
 

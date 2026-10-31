@@ -94,12 +94,14 @@ def is_module_system(value: str) -> bool:
 
 
 def normalize_hostname(value: str) -> str:
-    """A registry hostname as OpenTofu compares hostnames: lowercase, without ``:443``.
+    """A registry hostname as OpenTofu's svchost compares hostnames.
 
-    OpenTofu's svchost also maps internationalized names to Unicode; this does not.
+    yarl does the work: the host lowercased and in Unicode form, without a ``:443``
+    port.
     """
-    host = value.strip().lower().rstrip(".")
-    return host.removesuffix(":443")
+    url = URL.build(scheme="https", authority=value.strip())
+    host = url.host or ""
+    return host if url.explicit_port is None else f"{host}:{url.explicit_port}"
 
 
 def parse_platform_key(key: str) -> Platform | None:
