@@ -16,6 +16,8 @@ from typing import Any, override
 from aiohttp import ClientResponse, ClientTimeout
 from pyhaul import ContentRangeError, is_weak_validator, parse_etag
 from pyhaul.content_range import parse_content_range
+from pyhaul.transport import TransportHeaders
+from pyhaul.transport.aiohttp_adapter import headers_from_aiohttp_response
 
 from pulpcore.plugin.download import DownloadResult, HttpDownloader
 from pulpcore.plugin.exceptions import TimeoutException
@@ -113,7 +115,7 @@ class ResumingHttpDownloader(HttpDownloader):
             if resuming:
                 self._check_resumed(response)
             else:
-                self._remember(response.headers)
+                self._remember(headers_from_aiohttp_response(response))
                 if self.headers_ready_callback:
                     await self.headers_ready_callback(response.headers)
             while chunk := await response.content.read(_CHUNK):
@@ -131,7 +133,7 @@ class ResumingHttpDownloader(HttpDownloader):
             await self.session.close()
         return result
 
-    def _remember(self, headers: Mapping[str, str]) -> None:
+    def _remember(self, headers: TransportHeaders) -> None:
         """Keep the validator and length that a resumed request must match."""
         if headers.get("Content-Encoding"):
             return

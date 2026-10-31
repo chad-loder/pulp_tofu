@@ -105,6 +105,7 @@ module = [
   "pulp_tofu.app.mirror",
   "pulp_tofu.app.models",
   "pulp_tofu.app.registry",
+  "pulp_tofu.app.registry_api",
   "pulp_tofu.app.serializers",
   "pulp_tofu.app.tasks.*",
   "pulp_tofu.app.verify",

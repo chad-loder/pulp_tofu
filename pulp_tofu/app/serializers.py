@@ -258,3 +258,64 @@ class TofuDistributionSerializer(platform.DistributionSerializer):
     class Meta:
         fields = platform.DistributionSerializer.Meta.fields + ("remote",)
         model = models.TofuDistribution
+
+
+class TofuNamespaceSerializer(platform.ModelSerializer):
+    """A registry namespace and the distribution that serves it."""
+
+    pulp_href = platform.IdentityField(view_name="pulp_tofu/namespaces-detail")
+    name = serializers.RegexField(
+        r"^[a-z0-9][a-z0-9-]*$",
+        max_length=64,
+        help_text=_(
+            "The namespace in provider source addresses, e.g. acme in pulp.example/acme/widget."
+        ),
+    )
+    distribution = platform.DetailRelatedField(
+        required=False,
+        allow_null=True,
+        view_name_pattern=r"distributions(-.*/.*)?-detail",
+        queryset=models.TofuDistribution.objects.all(),
+        help_text=_("The distribution whose repository the registry serves for this namespace."),
+    )
+    content_hostname = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        help_text=_(
+            "Origin hostname of the content served, e.g. registry.opentofu.org to serve "
+            "synced upstream providers under this Pulp's hostname. Empty serves content "
+            "published to this Pulp."
+        ),
+    )
+    private = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text=_("Answer only callers allowed to view the namespace."),
+    )
+
+    def validate_distribution(
+        self, distribution: models.TofuDistribution | None
+    ) -> models.TofuDistribution | None:
+        """Refuse a distribution the caller cannot see; the namespace would expose it."""
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        allowed = distribution is None or (
+            user is not None
+            and (
+                user.has_perm("tofu.view_tofudistribution")
+                or user.has_perm("tofu.view_tofudistribution", distribution)
+            )
+        )
+        if not allowed:
+            raise serializers.ValidationError(_("Unknown distribution."))
+        return distribution
+
+    class Meta:
+        fields = platform.ModelSerializer.Meta.fields + (
+            "name",
+            "distribution",
+            "content_hostname",
+            "private",
+        )
+        model = models.TofuNamespace

@@ -1,7 +1,8 @@
 """Content-app routes for the provider network mirror protocol.
 
 pulpcore's content app imports ``<plugin>.app.content`` at startup. Routes register in
-order and aiohttp takes the first match, so ``index.json`` precedes ``{version}.json``.
+order and aiohttp takes the first match, so ``index.json`` precedes ``{version}.json``,
+and the checksum route precedes the archive route, which its paths would also match.
 """
 
 from aiohttp import web
@@ -22,6 +23,7 @@ app.add_routes(
     [
         web.get(PROVIDER + "index.json", mirror.index),
         web.get(PROVIDER + "{version}.json", mirror.version),
+        web.get(PROVIDER + "{version}/_checksums/{name}", mirror.checksums),
         web.get(PROVIDER + "{version}/{filename}", mirror.archive),
     ]
 )

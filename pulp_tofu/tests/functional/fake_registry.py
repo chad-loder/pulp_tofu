@@ -66,6 +66,11 @@ class RegistryState:
     # as a NAT or firewall that forgot the connection would.
     idle_reap: Literal["fin", "rst", "drop"] | None = None
     idle_reap_after: float = 1.0
+    # Bytes of padding added to the discovery document, to test the size limit.
+    discovery_padding: int = 0
+    # Every JSON document carries an ETag and answers a matching If-None-Match with 304.
+    not_modified: int = 0
+    if_none_match: list[str] = field(default_factory=list)
     connections: int = 0
     requests: list[str] = field(default_factory=list)
 
@@ -121,7 +126,10 @@ class FakeRegistry:
             return 503, "text/plain", b"down\n", _NO_FAULT
         parts = path.strip("/").split("/")
         if path == "/.well-known/terraform.json":
-            return _json({"providers.v1": "/v1/providers/"})
+            document: dict[str, object] = {"providers.v1": "/v1/providers/"}
+            if self.state.discovery_padding:
+                document["padding"] = "x" * self.state.discovery_padding
+            return _json(document)
         if parts[:3] == ["v1", "providers", NAMESPACE] and len(parts) == 5:
             return self._versions(parts[3])
         if parts[:3] == ["v1", "providers", NAMESPACE] and len(parts) == 8:
@@ -266,6 +274,18 @@ def _handler(registry: FakeRegistry) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:
             status, content_type, body, fault = registry.respond(self.path)
+            if status == 200 and content_type == "application/json":
+                etag = f'"{hashlib.sha256(body).hexdigest()[:16]}"'
+                if (validator := self.headers.get("If-None-Match")) is not None:
+                    registry.state.if_none_match.append(validator)
+                if validator == etag:
+                    registry.state.not_modified += 1
+                    self.send_response(304)
+                    self.send_header("ETag", etag)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                fault = _BodyFault(etag=etag)
             start = _range_start(self.headers.get("Range"), self.headers.get("If-Range"), fault)
             total = len(body)
             if status == 200 and start is not None and start < total:

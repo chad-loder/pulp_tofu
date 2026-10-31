@@ -1,6 +1,7 @@
 """REST API viewsets for pulp_tofu."""
 
 from drf_spectacular.utils import extend_schema
+from rest_framework import mixins
 from rest_framework.decorators import action
 from rest_framework.request import Request
 
@@ -256,3 +257,44 @@ class TofuDistributionViewSet(core.DistributionViewSet, core.RolesMixin):  # typ
         "queryset_scoping": {"function": "scope_queryset"},
     }
     LOCKED_ROLES = _roles("tofudistribution")
+
+
+class TofuNamespaceViewSet(
+    core.NamedModelViewSet,
+    mixins.CreateModelMixin,
+    mixins.DestroyModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    core.RolesMixin,
+):
+    """Registry namespaces: who owns, publishes to and reads each one."""
+
+    endpoint_name = "pulp_tofu/namespaces"  # type: ignore[assignment]
+    queryset = models.TofuNamespace.objects.all()
+    serializer_class = serializers.TofuNamespaceSerializer
+    filterset_fields = ["name"]
+    queryset_filtering_required_permission = "tofu.view_tofunamespace"
+
+    DEFAULT_ACCESS_POLICY = {
+        # The serializer checks that the caller may view the distribution it names.
+        "statements": _object_policy("tofunamespace", create=[], update=[]),
+        "creation_hooks": _creation_hooks("tofunamespace"),
+        "queryset_scoping": {"function": "scope_queryset"},
+    }
+    # As pulp_container's namespaces: owners manage, collaborators publish, consumers read.
+    LOCKED_ROLES = {
+        "tofu.tofunamespace_creator": ["tofu.add_tofunamespace"],
+        "tofu.tofunamespace_owner": [
+            "tofu.view_tofunamespace",
+            "tofu.change_tofunamespace",
+            "tofu.delete_tofunamespace",
+            "tofu.publish_tofunamespace",
+            "tofu.manage_roles_tofunamespace",
+        ],
+        "tofu.tofunamespace_collaborator": [
+            "tofu.view_tofunamespace",
+            "tofu.publish_tofunamespace",
+        ],
+        "tofu.tofunamespace_consumer": ["tofu.view_tofunamespace"],
+    }

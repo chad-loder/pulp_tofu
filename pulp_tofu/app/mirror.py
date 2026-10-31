@@ -130,6 +130,24 @@ class TofuMirror(Handler):
             }
         return _json(version_document(archives))
 
+    async def checksums(self, request: web.Request) -> web.StreamResponse:
+        """``GET :hostname/:namespace/:type/:version/_checksums/SHA256SUMS[.sig]``.
+
+        The registry protocol's download documents point here. The bytes are the ones
+        the signature was verified over, served unchanged.
+        """
+        source = await self._source(request)
+        provider_version = await self._provider_version(source, request.match_info["version"])
+        name = request.match_info["name"]
+        if name == "SHA256SUMS":
+            return web.Response(body=bytes(provider_version.shasums), content_type="text/plain")
+        if name == "SHA256SUMS.sig" and provider_version.shasums_signature:
+            return web.Response(
+                body=bytes(provider_version.shasums_signature),
+                content_type="application/octet-stream",
+            )
+        raise PathNotResolved(request.path)
+
     async def archive(self, request: web.Request) -> web.StreamResponse:
         """``GET :hostname/:namespace/:type/:version/:filename``."""
         source = await self._source(request)

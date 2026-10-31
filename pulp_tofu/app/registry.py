@@ -23,10 +23,20 @@ from aiohttp import (
     ClientSession,
     ClientTimeout,
 )
+from pyhaul.transport import TransportHeaders
+from pyhaul.transport.aiohttp_adapter import headers_from_aiohttp_response
 from yarl import URL
 
 from .flight import SingleFlight
 from .hashes import ZH_PREFIX, Sha256Hex, parse_sha256
+from .http_cache import (
+    NEGATIVE_TTL,
+    CacheEntry,
+    HttpCache,
+    freshness,
+    kept_headers,
+    monotonic,
+)
 from .protocol import Platform, PlatformKey, ProviderAddress, parse_platform_key
 from .retry import is_retryable, retry_delay
 from .signing import ARCHIVE_NAME
@@ -47,6 +57,8 @@ DISCOVERY_PATH = ".well-known/terraform.json"
 PROVIDERS_SERVICE = "providers.v1"
 
 MAX_METADATA_BYTES = 16 * 1024 * 1024
+# A discovery document lists a few service URLs.
+MAX_DISCOVERY_BYTES = 64 * 1024
 
 # Timeouts for metadata requests when the remote sets none. A healthy but busy registry
 # answers well inside the read timeout; a connection the network silently dropped
@@ -321,7 +333,7 @@ class RegistryClient:
         if known is not None:
             return known
         discovery = URL(self._remote.url).join(URL(DISCOVERY_PATH))
-        document = await self.fetch_json(discovery)
+        document = await self.fetch_json(discovery, max_bytes=MAX_DISCOVERY_BYTES)
         async with POOL.lease(self._remote) as session:
             session.providers_url = parse_discovery(document, discovery)
             return session.providers_url
@@ -345,37 +357,74 @@ class RegistryClient:
             raise UpstreamNotFound("/".join(segments))
         return (await self.providers_url()).joinpath(*segments)
 
-    async def fetch_json(self, url: URL) -> object:
-        body = await self.fetch_bytes(url)
+    async def fetch_json(self, url: URL, *, max_bytes: int = MAX_METADATA_BYTES) -> object:
+        body = await self.fetch_bytes(url, max_bytes=max_bytes)
         try:
             return cast("object", json.loads(body))
         except ValueError as exc:
             raise UpstreamError(f"{url} did not return JSON") from exc
 
-    async def fetch_bytes(self, url: URL | str) -> bytes:
-        """Fetch a small document into memory.
+    async def fetch_bytes(self, url: URL | str, *, max_bytes: int = MAX_METADATA_BYTES) -> bytes:
+        """Fetch a small document into memory, through the HTTP cache.
 
         Concurrent fetches of the same URL through the same remote share one request.
-        Failures follow ``retry``'s policy, with one exception: the first transport
-        failure retries at once on fresh connections, because it usually means the
-        upstream reaped an idle pooled connection, not that the upstream is down.
+        A fresh cached answer, 200 or 404, makes no request; a stale one is revalidated
+        and reused on 304. Failures follow ``retry``'s policy, with one exception: the
+        first transport failure retries at once on fresh connections, because it usually
+        means the upstream reaped an idle pooled connection, not that it is down.
 
         Raises:
-            UpstreamNotFound: The server answered 404.
+            UpstreamNotFound: The server answered 404, now or within the negative TTL.
             UpstreamUnreachable: The connection kept failing.
-            UpstreamError: Any other failure, or a body over ``MAX_METADATA_BYTES``.
+            UpstreamError: Any other failure, or a body over ``max_bytes``.
         """
         remote = self._remote
         key = (remote.pk, remote.pulp_last_updated, str(url))
-        return await _FETCHES.run(key, lambda: self._fetch_with_retries(str(url)))
+        return await _FETCHES.run(key, lambda: self._fetch_cached(key, str(url), max_bytes))
 
-    async def _fetch_with_retries(self, url: str) -> bytes:
+    async def _fetch_cached(self, key: tuple[object, ...], url: str, max_bytes: int) -> bytes:
+        entry = _CACHE.get(key)
+        if entry is not None and entry.is_fresh(monotonic()):
+            return _answer(entry, url)
+        status, headers, body = await self._fetch_with_retries(
+            url, entry.validators() if entry else {}, max_bytes
+        )
+        now = monotonic()
+        ceiling = float(self._remote.metadata_ttl)
+        if status == 304:
+            if entry is None:
+                raise UpstreamError(f"{url} answered 304 to an unconditional request")
+            if entry.revalidate(headers, now, ceiling=ceiling):
+                return _answer(entry, url)
+            _CACHE.discard(key)
+            return await self._fetch_cached(key, url, max_bytes)
+        if status == 404:
+            storable, fresh_until = freshness(
+                headers, now, default=NEGATIVE_TTL, ceiling=min(ceiling, NEGATIVE_TTL)
+            )
+        else:
+            storable, fresh_until = freshness(headers, now, default=None, ceiling=ceiling)
+        result = CacheEntry(
+            status=404 if status == 404 else 200,
+            body=body,
+            headers=kept_headers(headers),
+            fresh_until=fresh_until,
+        )
+        if storable:
+            _CACHE.put(key, result)
+        else:
+            _CACHE.discard(key)
+        return _answer(result, url)
+
+    async def _fetch_with_retries(
+        self, url: str, conditional: Mapping[str, str], max_bytes: int
+    ) -> tuple[int, TransportHeaders, bytes]:
         max_retries = self._remote.max_retries
         attempts = (DEFAULT_MAX_RETRIES if max_retries is None else max_retries) + 1
         failures = 0
         while True:
             try:
-                return await self._fetch_once(url)
+                return await self._fetch_once(url, conditional, max_bytes)
             except ClientResponseError as exc:
                 if exc.status == 404:
                     raise UpstreamNotFound(url) from exc
@@ -391,7 +440,13 @@ class RegistryClient:
                 continue
             await asyncio.sleep(retry_delay(failures, error))
 
-    async def _fetch_once(self, url: str) -> bytes:
+    async def _fetch_once(
+        self, url: str, conditional: Mapping[str, str], max_bytes: int
+    ) -> tuple[int, TransportHeaders, bytes]:
+        """One request; 200, 304 and 404 return, any other status raises.
+
+        Other 2xx answers are refused: a 206 or 203 to a plain GET is not the document.
+        """
         remote = self._remote
         timeout = ClientTimeout(
             total=remote.total_timeout or METADATA_TOTAL_TIMEOUT,
@@ -403,23 +458,37 @@ class RegistryClient:
                 await session.throttler.acquire()
             async with session.http.get(
                 url,
+                headers=dict(conditional),
                 timeout=timeout,
                 proxy=session.proxy,
                 proxy_auth=session.proxy_auth,
                 auth=session.auth,
             ) as response:
+                headers = headers_from_aiohttp_response(response)
+                if response.status in (304, 404):
+                    return response.status, headers, b""
                 response.raise_for_status()
-                if (response.content_length or 0) > MAX_METADATA_BYTES:
-                    raise UpstreamError(f"{url} exceeds the metadata size limit")
+                if response.status != 200:
+                    raise UpstreamError(f"{url} answered {response.status}, not 200")
+                # A server that announces or sends more than the limit is cut off unread.
+                if (response.content_length or 0) > max_bytes:
+                    raise UpstreamError(f"{url} exceeds the {max_bytes}-byte limit")
                 body = bytearray()
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     body += chunk
-                    if len(body) > MAX_METADATA_BYTES:
-                        raise UpstreamError(f"{url} exceeds the metadata size limit")
-                return bytes(body)
+                    if len(body) > max_bytes:
+                        raise UpstreamError(f"{url} exceeds the {max_bytes}-byte limit")
+                return response.status, headers, bytes(body)
+
+
+def _answer(entry: CacheEntry, url: str) -> bytes:
+    if entry.status == 404:
+        raise UpstreamNotFound(url)
+    return entry.body
 
 
 _FETCHES: SingleFlight[bytes] = SingleFlight()
+_CACHE = HttpCache()
 
 
 def _is_segment(value: str) -> bool:
