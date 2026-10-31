@@ -77,3 +77,7 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.ruff_cache/
+
+# Local Pulp state written by dev/pulp_dev_settings.py
+.dev/

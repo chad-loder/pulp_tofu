@@ -1,0 +1,24 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "strict",
+  "include": ["pulp_tofu", "dev"],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "pulp_tofu/app/migrations",
+    "pulp_tofu/tests/functional"
+  ],
+  "reportMissingImports": "error",
+  "reportMissingTypeStubs": "none",
+  "reportUnknownMemberType": "none",
+  "reportUnknownArgumentType": "none",
+  "reportUnknownVariableType": "none",
+  "reportUnknownParameterType": "none",
+  "reportUnknownLambdaType": "none",
+  "reportIncompatibleVariableOverride": "none",
+  "enableTypeIgnoreComments": false,
+  "reportImplicitOverride": "error",
+  "reportUnnecessaryTypeIgnoreComment": "error"
+}

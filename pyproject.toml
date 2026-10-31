@@ -8,10 +8,10 @@ build-backend = 'setuptools.build_meta'
 [project]
 name = "pulp-tofu"
 version = "0.0.0.dev"
-description = "pulp-tofu plugin for the Pulp Project"
+description = "OpenTofu provider mirror plugin for the Pulp Project"
 readme = "README.md"
 authors = [
-  {name="AUTHOR", email="author@email.here"},
+  {name="Chad Loder", email="26261238+chad-loder@users.noreply.github.com"},
 ]
 classifiers = [
   "License :: OSI Approved :: GNU General Public License v2 or later (GPLv2+)",
@@ -19,26 +19,105 @@ classifiers = [
   "Framework :: Django",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-  "pulpcore>=3.70.0,<3.100",
+  "pulpcore>=3.116.0,<3.130",
+  "aiohttp>=3.10.10,<3.15",  # Same bounds as pulpcore 3.116.
+  "Django>=5.2.0,<5.3",  # Same bounds as pulpcore 3.116.
+  "djangorestframework>=3.14.0,<=3.17.1",  # Same bounds as pulpcore 3.116.
+  "pysequoia>=0.1.33,<0.2",  # Same bounds as pulpcore 3.116.
+  "yarl>=1.12.0,<1.25",  # Same bounds as pulpcore 3.116.
 ]
 
 [project.urls]
-Homepage = "https://example.com"
-Documentation = "https://example.com"
 Repository = "https://github.com/chad-loder/pulp_tofu"
 "Bug Tracker" = "https://github.com/chad-loder/pulp_tofu/issues"
-Changelog = "https://example.com/changes/"
-
 
 [project.entry-points."pulpcore.plugin"]
 pulp_tofu = "pulp_tofu:default_app_config"
+
+[project.entry-points."pytest11"]
+pulp_tofu = "pulp_tofu.pytest_plugin"
+
+[dependency-groups]
+# Local development only; Pulp's CI installs from the *_requirements.txt files.
+lint = [
+  "ruff==0.15.22",  # Inside plugin_template's >=0.15.11,<0.16.
+  "mypy==2.4.0",
+  "pyright==1.1.414",
+  "django-stubs==5.2.9",  # Tracks Django 5.2.
+  "djangorestframework-stubs==3.16.9",
+]
+test = [
+  "pytest==9.1.1",
+  "pytest-asyncio==1.4.0",
+  "aioresponses==0.7.9",
+]
+
+[tool.uv]
+default-groups = ["lint", "test"]
+exclude-newer = "168h"
+# Local checks run against the pulpcore release the functional tests run on.
+constraint-dependencies = ["pulpcore==3.116.1"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+local_partial_types = true
+enable_error_code = [
+  "possibly-undefined",
+  "redundant-expr",
+  "truthy-bool",
+  "truthy-iterable",
+  "ignore-without-code",
+  "unused-awaitable",
+  "explicit-override",
+  "deprecated",
+  "exhaustive-match",
+]
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+exclude = ["^pulp_tofu/app/migrations/", "^docs/", "^\\.ci/"]
+
+[tool.django-stubs]
+django_settings_module = "pulp_dev_settings"
+
+# pulpcore ships no py.typed; mypy reads its source so Django model fields resolve.
+[[tool.mypy.overrides]]
+module = ["pulpcore.*"]
+follow_untyped_imports = true
+implicit_reexport = true
+
+# Modules that subclass pulpcore's unannotated models, serializers, viewsets and content
+# handler: calls into pulpcore and the Any it returns stay unchecked here and nowhere else.
+[[tool.mypy.overrides]]
+module = [
+  "pulp_tofu.app.mirror",
+  "pulp_tofu.app.models",
+  "pulp_tofu.app.registry",
+  "pulp_tofu.app.serializers",
+  "pulp_tofu.app.tasks.*",
+  "pulp_tofu.app.viewsets",
+]
+disallow_untyped_calls = false
+warn_return_any = false
+
+# Test code drives untyped pulpcore fixtures and generated bindings.
+[[tool.mypy.overrides]]
+module = ["pulp_tofu.tests.functional.*"]
+disallow_untyped_defs = false
+disallow_any_generics = false
+
+[tool.pytest.ini_options]
+addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib"]
+xfail_strict = true
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.setuptools.packages.find]
 where = ["."]
