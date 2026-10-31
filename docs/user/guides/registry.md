@@ -16,12 +16,19 @@ terraform {
 ```
 
 An administrator turns the registry on and sets the hostname; see
-[Registry Hostname](site:pulp_tofu/docs/admin/guides/registry-hostname/).
+[Set the Registry Hostname](site:pulp_tofu/docs/admin/guides/registry-hostname/).
 
-## Namespaces
+## Create a namespace
 
 A namespace is the middle part of a source address. Each one names the distribution
-whose repository answers for it:
+whose repository answers for it.
+
+Prerequisites:
+
+- The registry turned on; see
+  [Set the Registry Hostname](site:pulp_tofu/docs/admin/guides/registry-hostname/).
+
+To serve `pulp.example/hashicorp/...`:
 
 ```bash
 curl -u admin --json '{
@@ -47,7 +54,7 @@ The registry serves only what the repository version holds. Sync the providers f
 or let the distribution's mirror pull them through; see
 [Sync Providers](site:pulp_tofu/docs/user/guides/sync/).
 
-## What OpenTofu fetches
+## Registry endpoints
 
 | request | served by |
 | --- | --- |
@@ -59,15 +66,39 @@ or let the distribution's mirror pull them through; see
 A version is listed only if its checksums were signed: OpenTofu requires a signing key
 from every registry except `registry.opentofu.org`.
 
-## Private namespaces
+## Grant read access to a private namespace
 
-OpenTofu sends `TF_TOKEN_<hostname>` as a bearer token on registry API requests, and no
-credentials when downloading archives. A private namespace refuses anonymous registry
-requests with 401 and users without the view permission with 403. The archive URLs stay
-readable to anyone who knows them, as with any distribution without a content guard.
-Grant read access with the namespace roles:
+A private namespace refuses anonymous registry requests with 401 and users without the
+view permission with 403. For tokens and archive protection, see
+[Run a Private Registry](site:pulp_tofu/docs/user/guides/private/).
+
+To let `alice` read a namespace:
 
 ```bash
 curl -u admin --json '{"role": "tofu.tofunamespace_consumer", "users": ["alice"]}' \
   "$PULP<namespace pulp_href>add_role/"
 ```
+
+## Troubleshooting
+
+When OpenTofu installs from Pulp as a registry, you might encounter the following issues.
+
+### Error: `provider registry ... does not have a provider named ...`
+
+You might get an error that states:
+
+```text
+Could not retrieve the list of available versions for provider
+pulp.example/hashicorp/random: provider registry pulp.example does not have a
+provider named pulp.example/hashicorp/random
+```
+
+This issue occurs when the namespace's distribution has no version of that provider in
+its repository. The registry serves only what the repository holds; it does not pull
+through. It also occurs when `content_hostname` does not match the registry the
+provider came from.
+
+To resolve it, sync the provider into the repository, or install it once through the
+distribution's network mirror so that Pulp pulls it through. Then check that
+`content_hostname` names the registry the provider came from, for example
+`registry.opentofu.org`.

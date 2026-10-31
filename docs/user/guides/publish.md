@@ -107,3 +107,35 @@ arguments:
 On pulpcore 3.120 or later, a job can use the provider's OIDC token through pulpcore's
 Workload Identity instead of a stored token; see
 [Run a Private Registry](site:pulp_tofu/docs/user/guides/private/).
+
+## Troubleshooting
+
+When you publish providers, you might encounter the following issues.
+
+### Error: `The namespace's distribution does not accept uploads.`
+
+You might get a 400 response that states
+`The namespace's distribution does not accept uploads.`
+
+This issue occurs when the namespace's distribution has `allow_uploads` off. A PATCH
+through the generated Python bindings turns it off: their update model sends every
+field's default, so changing only `content_guard` also sends `"allow_uploads": false`.
+
+To resolve it, set `allow_uploads` to `true` again, and include it in every PATCH made
+through the bindings.
+
+### Error: `provider binary not found`
+
+You might get an error from `tofu init` that states:
+
+```text
+Error while installing pulp.example/acme/widget v1.2.0: provider binary not found:
+could not find executable file starting with terraform-provider-widget
+```
+
+This issue occurs when an archive holds no executable named
+`terraform-provider-<type>_v<version>`. Pulp checks the archives against the signed
+`SHA256SUMS`, not their contents, so the release publishes and fails only at install.
+
+To resolve it, build the archives with GoReleaser's provider template, which names and
+marks the binary, and publish the release as a new version.

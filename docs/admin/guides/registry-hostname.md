@@ -1,4 +1,4 @@
-# Registry Hostname
+# Set the Registry Hostname
 
 !!! warning "Tech preview"
     The registry is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
@@ -7,7 +7,9 @@ OpenTofu finds a registry by fetching `https://<hostname>/.well-known/terraform.
 The discovery document has no path, so a host serves one registry; namespaces route
 requests inside it, as pulp_container routes one `/v2/` API by repository path.
 
-## Settings
+## Turn on the registry
+
+To turn on the registry, add to Pulp's settings:
 
 ```python
 TOFU_REGISTRY_ENABLED = True
@@ -15,12 +17,12 @@ TOFU_REGISTRY_HOSTNAME = "pulp.example"
 ```
 
 `TOFU_REGISTRY_HOSTNAME` is the hostname users write in source addresses, with a port if
-it is not 443. It must be the host that serves Pulp's API workers over TLS. Archive,
+it is not 443. It needs a dot: OpenTofu refuses a module registry hostname without one. It must be the host that serves Pulp's API workers over TLS. Archive,
 checksum and signature URLs in download documents start with `CONTENT_ORIGIN`, so that
 must be reachable by OpenTofu clients as well. Every setting is listed in the
 [settings reference](site:pulp_tofu/docs/admin/reference/settings/).
 
-## Webserver
+## Route the registry
 
 The registry runs in the API workers. The shipped snippets route two locations to them:
 

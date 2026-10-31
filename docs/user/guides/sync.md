@@ -26,7 +26,7 @@ Every selected version's `SHA256SUMS` signature is verified during the sync. Und
 remote's `immediate` policy the archives download during the sync and get `h1:` hashes;
 under `on_demand` they download on first request.
 
-## Offline use
+## Serve providers offline
 
 Sync with an `immediate` remote, then serve the repository through a distribution with
 no remote:
@@ -41,7 +41,7 @@ curl -u admin --json '{
 
 That distribution answers only from the repository and never contacts the registry.
 
-## Modules
+## Sync modules
 
 !!! warning "Tech preview"
     Module sync is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).

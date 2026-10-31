@@ -30,7 +30,7 @@ For administrators:
 
 - [Install the Plugin](site:pulp_tofu/docs/admin/guides/install/): packages, webserver,
   TLS, domains and object storage.
-- [Registry Hostname](site:pulp_tofu/docs/admin/guides/registry-hostname/): turn on the
+- [Set the Registry Hostname](site:pulp_tofu/docs/admin/guides/registry-hostname/): turn on the
   registry and choose the name users write in `source` addresses.
 - [Sign Releases with Pulp](site:pulp_tofu/docs/admin/guides/signing/): let Pulp sign
   releases that arrive unsigned.
