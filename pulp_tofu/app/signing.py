@@ -55,7 +55,7 @@ def verify_sha256sums(
     armored_keys: Sequence[str],
     *,
     trusted: frozenset[Fingerprint] = frozenset(),
-) -> Signer:
+) -> "Signer":
     """Verify a detached signature over ``document`` against any of ``armored_keys``.
 
     A non-empty ``trusted`` admits only certificates with those fingerprints, whatever
