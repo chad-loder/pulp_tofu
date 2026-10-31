@@ -455,7 +455,7 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
         queryset=apps.get_model("core", "OpenPGPKeyring").objects.all(),
         help_text=_("The OpenPGP keyring holding the keys that sign the namespace's releases."),
     )
-    signing_service = serializers.HyperlinkedRelatedField(
+    signing_service = platform.RelatedField(
         required=False,
         allow_null=True,
         view_name="signing-services-detail",
