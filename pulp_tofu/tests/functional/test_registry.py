@@ -12,6 +12,8 @@ from yarl import URL
 from .conftest import Mirror, fetch
 from .fake_registry import NAMESPACE
 
+pytestmark = pytest.mark.parallel
+
 REGISTRY = "/tofu/v1/providers"
 
 

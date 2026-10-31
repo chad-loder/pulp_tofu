@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import random
+import secrets
 import select
 import socket
 import ssl
@@ -27,7 +28,9 @@ from typing import Literal, override
 
 from pysequoia import SignatureMode, Tsk, sign
 
-NAMESPACE = "acme"
+# Unique per process: Pulp namespaces are unique per domain, and xdist workers share one
+# Pulp.
+NAMESPACE = f"acme{secrets.token_hex(3)}"
 PLATFORMS = (("linux", "amd64"), ("linux", "arm64"), ("darwin", "arm64"))
 # Longer than any client timeout the tests expect to hit.
 DROP_HOLD_SECONDS = 120.0

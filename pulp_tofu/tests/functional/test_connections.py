@@ -4,6 +4,8 @@ import pytest
 
 from .conftest import Mirror
 
+pytestmark = pytest.mark.parallel
+
 # A silent drop costs one read timeout; the drop case shortens it on the remote.
 DROP_READ_TIMEOUT = 3.0
 DROP_BUDGET_SECONDS = DROP_READ_TIMEOUT + 5.0

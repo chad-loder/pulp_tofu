@@ -1,9 +1,12 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from pysequoia import Tsk
 
 from .conftest import Mirror
+
+pytestmark = pytest.mark.parallel
 
 
 def test_stale_listing_is_served_at_once_and_refreshed_behind(mirror: Mirror) -> None:

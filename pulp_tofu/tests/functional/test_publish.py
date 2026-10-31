@@ -15,6 +15,8 @@ from pulpcore.tests.functional.utils import PulpTaskError
 from .conftest import E2E, PULP_URL, fetch
 from .fake_registry import FakeRegistry, Release, signed_release
 
+pytestmark = pytest.mark.parallel
+
 REGISTRY = "/tofu/v1/providers"
 
 

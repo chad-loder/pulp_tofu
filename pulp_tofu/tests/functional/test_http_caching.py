@@ -1,6 +1,10 @@
 import time
 
+import pytest
+
 from .conftest import Mirror
+
+pytestmark = pytest.mark.parallel
 
 
 def test_oversized_discovery_document_is_refused(mirror: Mirror) -> None:

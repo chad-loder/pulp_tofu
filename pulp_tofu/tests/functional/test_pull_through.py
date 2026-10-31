@@ -2,10 +2,14 @@ import hashlib
 import io
 import time
 
+import pytest
+
 from pulp_tofu.app.hashes import h1_hash
 
 from .conftest import Mirror
-from .fake_registry import Release
+from .fake_registry import NAMESPACE, Release
+
+pytestmark = pytest.mark.parallel
 
 
 def _release(mirror: Mirror, version: str = "1.0.0") -> Release:
@@ -78,7 +82,7 @@ def test_unknown_provider_is_not_found(mirror: Mirror) -> None:
 
 
 def test_excluded_provider_never_reaches_upstream(mirror: Mirror) -> None:
-    mirror.update_remote(excludes=[f"*/acme/{mirror.provider_type}"])
+    mirror.update_remote(excludes=[f"*/{NAMESPACE}/{mirror.provider_type}"])
     assert mirror.get("index.json").status == 404
     assert mirror.get("1.0.0.json").status == 404
     assert mirror.registry.state.requests == []

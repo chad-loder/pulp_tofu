@@ -1,8 +1,12 @@
 from collections.abc import Callable
 from typing import Any
 
+import pytest
+
 from .conftest import Mirror
 from .fake_registry import NAMESPACE
+
+pytestmark = pytest.mark.parallel
 
 
 def _selection(mirror: Mirror, **extra: object) -> list[dict[str, object]]:
