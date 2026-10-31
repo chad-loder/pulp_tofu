@@ -8,8 +8,18 @@ build-backend = 'setuptools.build_meta'
 [project]
 name = "pulp-tofu"
 version = "0.0.0.dev"
-description = "OpenTofu provider mirror plugin for the Pulp Project"
+description = "Pulp plugin: OpenTofu and Terraform provider mirror, and provider and module registry"
 readme = "README.md"
+keywords = [
+  "pulp",
+  "pulpcore",
+  "opentofu",
+  "terraform",
+  "provider-registry",
+  "module-registry",
+  "network-mirror",
+  "pull-through-cache",
+]
 authors = [
   {name="Chad Loder", email="26261238+chad-loder@users.noreply.github.com"},
 ]
