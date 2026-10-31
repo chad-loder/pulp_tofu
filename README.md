@@ -2,6 +2,12 @@
 
 A [Pulp](https://pulpproject.org/) plugin that serves OpenTofu providers and modules.
 
+> **Beta.** pulp_tofu is developed outside the Pulp Project and is not part of Pulp: it
+> is not in Pulp's container images or on pulpproject.org, and its API may change
+> between releases.
+
+Documentation: <https://chad-loder.github.io/pulp_tofu/>
+
 - **Pull-through mirror.** A distribution answers the
   [provider network mirror protocol](https://opentofu.org/docs/internals/provider-network-mirror-protocol/).
   The first request for a provider fetches it from the upstream registry and verifies its
@@ -22,7 +28,7 @@ provider_installation {
 }
 ```
 
-See the [documentation](docs/index.md). [pulp-cli-tofu](https://github.com/chad-loder/pulp-cli-tofu)
+[pulp-cli-tofu](https://github.com/chad-loder/pulp-cli-tofu)
 adds `pulp tofu` commands to pulp-cli.
 
 | path | holds |
@@ -37,7 +43,7 @@ Development: [docs/dev/index.md](docs/dev/index.md).
 
 ## How to File an Issue
 
-File through this project's GitHub issues.
+File through this project's GitHub issues, not Pulp's trackers.
 
-> **WARNING** Is this security related? If so, follow the
-> [Security Disclosures](https://pulpproject.org/help/security-disclosures/) procedure.
+> **WARNING** Is this security related? If so, report it privately through
+> [GitHub's vulnerability reporting](https://github.com/chad-loder/pulp_tofu/security/advisories/new).

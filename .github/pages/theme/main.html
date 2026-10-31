@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block announce %}
+  <div style="text-align: center;">
+    <b>Beta.</b> pulp_tofu is developed outside the Pulp Project and is not part of Pulp.
+    <a href="{{ 'pulp_tofu/docs/user/learn/tech-preview/' | url }}">What that means</a>
+  </div>
+{% endblock %}
+
+{% block footer %}
+<footer class="md-footer">
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-custom">
+      <div class="md-footer-links">
+        <a href="https://github.com/chad-loder/pulp_tofu/blob/main/LICENSE">License</a>
+        <a href="https://github.com/chad-loder/pulp_tofu/issues">Issues</a>
+        <a href="https://github.com/chad-loder/pulp_tofu/security">Security</a>
+        <a href="https://pulpproject.org/">Pulp Project</a>
+      </div>
+    </div>
+    <div class="md-footer-meta__inner md-grid">
+      {% include "partials/copyright.html" %}
+      {% if config.extra.social %}
+        {% include "partials/social.html" %}
+      {% endif %}
+    </div>
+  </div>
+</footer>
+{% endblock %}

@@ -1,11 +1,16 @@
 # Welcome to Pulp OpenTofu
 
+!!! warning "Beta, and not part of the Pulp Project"
+    pulp_tofu is developed outside the Pulp Project and is not in Pulp's images or on
+    pulpproject.org. Its API may change between releases. See
+    [Beta Status](site:pulp_tofu/docs/user/learn/tech-preview/).
+
 The `tofu` plugin lets OpenTofu users run `tofu init` against your Pulp instead of the
 public registry. Providers and modules come from Pulp, keep installing when the
 upstream registry is slow or down, and are checked against their publisher's signature
 before Pulp serves them. You can also publish your own providers and modules to Pulp.
 
-This plugin is part of the [Pulp Project](site:/) and assumes some familiarity with the
+It is a plugin for [Pulp](site:/) and assumes some familiarity with the
 [pulpcore documentation](site:pulpcore/).
 
 ## What do you want to do?
@@ -19,6 +24,7 @@ This plugin is part of the [Pulp Project](site:/) and assumes some familiarity w
 | Release your own modules to Pulp | [Publish Modules](site:pulp_tofu/docs/user/guides/modules/) |
 | Serve modules from the public registry or GitHub through Pulp | [Sync Providers Ahead of Use: Modules](site:pulp_tofu/docs/user/guides/sync/#modules) |
 | Keep internal providers private and give CI a token | [Run a Private Registry](site:pulp_tofu/docs/user/guides/private/) |
+| Declare Pulp remotes, repositories and distributions in OpenTofu code (needs an unreleased provider change) | [Manage Pulp with OpenTofu](site:pulp_tofu/docs/user/guides/opentofu-provider/) |
 
 Prefer a command line to the REST API?
 [pulp-cli-tofu](https://github.com/chad-loder/pulp-cli-tofu) adds `pulp tofu` commands
@@ -47,5 +53,5 @@ For administrators:
   fetches, when, and what happens when the upstream fails.
 - [Differences from registry.opentofu.org](site:pulp_tofu/docs/user/learn/differences/):
   what works the same and what does not.
-- [Tech Preview](site:pulp_tofu/docs/user/learn/tech-preview/): the registry,
-  publishing, modules and tokens work, but their API may still change.
+- [Beta Status](site:pulp_tofu/docs/user/learn/tech-preview/): what being outside the
+  Pulp Project means, which features may still change, and changes not yet upstream.

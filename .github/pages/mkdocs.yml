@@ -1,0 +1,59 @@
+# The GitHub Pages site: pulp-docs' theme and plugin, building only pulp_tofu.
+# Paths are relative to this file; the workflow checks pulp-docs out beside the repo
+# and stages the site root in pages-root/ (see .github/workflows/pages.yml).
+INHERIT: ../../../pulp-docs/mkdocs.yml
+site_name: "Pulp OpenTofu (beta)"
+site_url: "https://chad-loder.github.io/pulp_tofu/"
+repo_url: "https://github.com/chad-loder/pulp_tofu"
+repo_name: "chad-loder/pulp_tofu"
+# For the root pages; pulp-docs sets docs/ pages' edit links itself.
+edit_uri_template: "https://github.com/chad-loder/pulp_tofu/edit/main/.github/pages/root/{path}"
+docs_dir: "../../../pages-root"
+site_dir: "../../../site"
+theme:
+  custom_dir: "theme"
+copyright: |
+  pulp_tofu contributors. Not a Pulp Project component.
+hooks:
+  - hooks.py
+nav:
+  - Home: "index.md"
+  - "User Manual":
+      - "user/index.md"
+  - "Developer Manual":
+      - "dev/index.md"
+  # pulp-docs adds its governance pages under Help > Governance; here there are none.
+  - Help:
+      - "help/index.md"
+      - Governance: []
+# INHERIT replaces lists, so pulp-docs' plugin list is restated whole.
+plugins:
+  - PulpDocs:
+      components:
+        - title: "OpenTofu"
+          path: "pulp_tofu"
+          git_url: "https://github.com/chad-loder/pulp_tofu"
+          kind: "Content"
+        # pulp-docs requires its own entry; the build leaves it out of --path.
+        - title: "Pulp Docs"
+          path: "pulp-docs"
+          git_url: "https://github.com/pulp/pulp-docs"
+          kind: "Other"
+  - search
+  - site-urls
+  - blog:
+      blog_dir: blog
+      blog_toc: false
+  - macros:
+      render_by_default: false
+  - tags
+  - literate-nav:
+      nav_file: _SUMMARY.md
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: []
+extra:
+  social:
+    - icon: "fontawesome/brands/github-alt"
+      link: "https://github.com/chad-loder/pulp_tofu"
