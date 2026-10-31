@@ -198,8 +198,8 @@ class ProviderPackage(Content):
 class ModuleVersion(Content):
     """One version of a module package: a ``.tar.gz`` of the module's directory.
 
-    ``namespace`` and ``name`` keep their case: OpenTofu matches module addresses
-    case-sensitively.
+    ``namespace`` and ``name`` keep the case they arrived with; the registry matches
+    ``name`` ignoring case.
     """
 
     TYPE = "module_version"

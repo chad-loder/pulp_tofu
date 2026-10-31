@@ -1,7 +1,7 @@
 """Type guards for values deserialized from JSON, task kwargs or DRF.
 
-TypeGuard rather than TypeIs: TypeIs needs Python 3.13. The guards widen the
-elements to ``object`` so callers check each one rather than trusting ``Any``.
+TypeGuard rather than TypeIs: TypeIs needs Python 3.13. The guards type the
+elements as ``object``, so the checker makes callers narrow each one.
 """
 
 from typing import TypeGuard

@@ -133,12 +133,10 @@ def parse_location(location: str, base: URL) -> ModuleSource:
 def checkout(source: GitSource, workdir: Path, environment: Mapping[str, str]) -> Path:
     """Check out a git source at its ref into ``workdir``; return the module directory.
 
-    As prek does: fetch only the ref at depth 1, and when the server refuses that, fetch
-    every branch and tag and check the ref out, unless the refusal was for want of
-    credentials, which a full fetch would only meet again more slowly. Submodules are
-    updated, as go-getter does, when the checkout has any. Line endings are left as
-    committed, as mise clones, so a worker's git configuration cannot change the
-    package's digest.
+    Fetches only the ref at depth 1. When the server refuses that, fetches every branch
+    and tag and checks the ref out, unless the refusal was for lack of credentials.
+    Updates submodules when the checkout has any, as go-getter does. Leaves line endings
+    as committed, so a worker's git configuration cannot change the package's digest.
 
     Raises:
         ModuleSourceError: Git failed, or the repository needs credentials.
