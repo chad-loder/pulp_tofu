@@ -21,9 +21,17 @@ curl -u alice --json '{
 export TF_TOKEN_pulp_example="tofu_..."
 ```
 
-A token acts as its user, narrowed to its namespaces. `read` reads them; `publish` also
-publishes releases to them, so a release job can use one in place of a password. Pulp
-stores only a digest of the token. Delete the token to revoke it; every user sees and
+A token acts as its user, narrowed to its namespaces and to its scope:
+
+| scope | allows |
+| --- | --- |
+| `read` | reading the namespaces through the registry |
+| `update` | also publishing new versions of providers and modules the namespace already serves |
+| `publish` | also publishing new providers and modules |
+
+A release job can use an `update` or `publish` token in place of a password. Give it
+`update` once its provider or module is published: if the token leaks, it cannot add a
+lookalike name to the namespace. Pulp stores only a digest of the token. Delete the token to revoke it; every user sees and
 deletes only their own tokens.
 
 ## CI with Workload Identity

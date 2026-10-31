@@ -1,0 +1,1 @@
+Added a page on how Pulp's registry differs from registry.opentofu.org, and set `retain_repo_versions` in the mirror guide.

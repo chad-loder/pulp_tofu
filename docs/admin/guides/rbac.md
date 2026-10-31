@@ -26,9 +26,15 @@ and so on. A repository owner can also sync, modify and repair it.
 ## Registry tokens
 
 A token authenticates as the account that created it and never adds a permission that
-account lacks: it narrows the account's permissions to the token's namespaces, and to
-reading unless its scope is `publish`. Every account, administrators included, sees and
-deletes only its own tokens.
+account lacks: it narrows the account's permissions to the token's namespaces, and to its
+scope. `read` only reads, `update` also publishes new versions of names the namespace
+serves, `publish` also publishes new names. Every account, administrators included, sees
+and deletes only its own tokens.
+
+A global role or a role on the domain counts as much as a role on the object wherever the
+plugin checks a permission itself: reading a
+private namespace, and naming namespaces, distributions and keyrings when creating a
+token or a namespace.
 
 ## Workload Identity
 

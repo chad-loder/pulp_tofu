@@ -30,4 +30,5 @@ To get started, [mirror providers for OpenTofu](site:pulp_tofu/docs/user/guides/
 - [Sync providers ahead of use](site:pulp_tofu/docs/user/guides/sync/)
 - [How providers are verified](site:pulp_tofu/docs/user/learn/verification/)
 - [Caching and upstream load](site:pulp_tofu/docs/user/learn/caching/)
+- [Differences from registry.opentofu.org](site:pulp_tofu/docs/user/learn/differences/)
 - [Install the plugin](site:pulp_tofu/docs/admin/guides/install/)

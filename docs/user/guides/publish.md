@@ -85,9 +85,11 @@ OpenTofu then installs it as `<TOFU_REGISTRY_HOSTNAME>/acme/widget`.
 
 ## Publish from GitHub Actions
 
-After GoReleaser's provider release step, upload `dist/` with a registry token that has
-`publish` scope on the namespace. The token goes to curl in a header file, so it never
-appears in a process's arguments:
+After GoReleaser's provider release step, upload `dist/` with a registry token on the
+namespace. `update` scope suffices once the provider's first version is published, and
+keeps a leaked token from publishing new provider names; the first release needs
+`publish`. The token goes to curl in a header file, so it never appears in a process's
+arguments:
 
 ```yaml
 - name: Publish to Pulp

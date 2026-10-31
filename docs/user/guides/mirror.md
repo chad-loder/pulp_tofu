@@ -31,7 +31,8 @@ download hosts as well as the registry.
 ## Create a repository and a distribution
 
 ```bash
-curl -u admin --json '{"name": "providers"}' "$PULP/pulp/api/v3/repositories/tofu/tofu/"
+curl -u admin --json '{"name": "providers", "retain_repo_versions": 1}' \
+  "$PULP/pulp/api/v3/repositories/tofu/tofu/"
 
 curl -u admin --json '{
   "name": "tofu",
@@ -42,7 +43,9 @@ curl -u admin --json '{
 ```
 
 Each provider archive Pulp pulls is added to a new version of the repository, which
-keeps it from orphan cleanup. A distribution with a remote and no repository still
+keeps it from orphan cleanup. A busy mirror makes many versions, each holding
+everything before it, so `retain_repo_versions` of 1 keeps only the latest; raise it to
+keep versions you can roll back to. A distribution with a remote and no repository still
 serves, but what it pulls belongs to no repository version. A distribution with a
 repository and no remote serves only what the repository holds.
 
