@@ -198,25 +198,40 @@ def _wait_for_package(bindings: Any, repository: Any) -> None:  # noqa: ANN401
     pytest.fail("the pulled-through package never reached the repository")
 
 
-def test_init_pulls_through_then_installs_with_upstream_down(
-    tofu: Tofu,
-    tofu_bindings: Any,
-    monitor_task: Callable[[str], Any],
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenTofuMirror:
+    remote: Any
+    repository: Any
+    distribution: Any
+
+
+@pytest.fixture
+def opentofu(
     tofu_remote_factory: Callable[..., Any],
     tofu_repository_factory: Callable[..., Any],
     tofu_distribution_factory: Callable[..., Any],
-) -> None:
+) -> OpenTofuMirror:
+    """A remote for registry.opentofu.org, a repository, and a distribution of both."""
     remote = tofu_remote_factory(url="https://registry.opentofu.org/", total_timeout=600)
     repository = tofu_repository_factory()
     distribution = tofu_distribution_factory(remote=remote, repository=repository)
-    mirror = _network_mirror(distribution.base_url)
+    return OpenTofuMirror(remote=remote, repository=repository, distribution=distribution)
+
+
+def test_init_pulls_through_then_installs_with_upstream_down(
+    tofu: Tofu,
+    opentofu: OpenTofuMirror,
+    tofu_bindings: Any,
+    monitor_task: Callable[[str], Any],
+) -> None:
+    mirror = _network_mirror(opentofu.distribution.base_url)
 
     first = _passed(tofu.init(RANDOM % "hashicorp/random", mirror))
     assert "Installed hashicorp/random v3.7.2 (verified checksum)" in first
-    _wait_for_package(tofu_bindings, repository)
+    _wait_for_package(tofu_bindings, opentofu.repository)
 
     response = tofu_bindings.RemotesTofuApi.partial_update(
-        remote.pulp_href, {"url": "https://upstream.invalid/", "metadata_ttl": 0}
+        opentofu.remote.pulp_href, {"url": "https://upstream.invalid/", "metadata_ttl": 0}
     )
     monitor_task(response.task)
     second = _passed(tofu.init(RANDOM % "hashicorp/random", mirror))
@@ -225,18 +240,16 @@ def test_init_pulls_through_then_installs_with_upstream_down(
 
 def test_init_from_pulp_as_the_registry_without_cli_config(
     tofu: Tofu,
+    opentofu: OpenTofuMirror,
     tofu_sync: Callable[..., Any],
-    tofu_remote_factory: Callable[..., Any],
-    tofu_repository_factory: Callable[..., Any],
-    tofu_distribution_factory: Callable[..., Any],
     tofu_namespace_factory: Callable[..., Any],
 ) -> None:
-    remote = tofu_remote_factory(url="https://registry.opentofu.org/", total_timeout=600)
-    repository = tofu_repository_factory()
-    distribution = tofu_distribution_factory(remote=remote, repository=repository)
     selection = {"namespace": "hashicorp", "type": "random", "versions": ["3.7.2"]}
-    tofu_sync(repository, remote, [selection], platforms=[f"linux_{TOFU_ARCH[platform.machine()]}"])
-    tofu_namespace_factory("hashicorp", distribution, content_hostname="registry.opentofu.org")
+    platforms = [f"linux_{TOFU_ARCH[platform.machine()]}"]
+    tofu_sync(opentofu.repository, opentofu.remote, [selection], platforms=platforms)
+    tofu_namespace_factory(
+        "hashicorp", opentofu.distribution, content_hostname="registry.opentofu.org"
+    )
 
     output = _passed(tofu.init(RANDOM % f"{REGISTRY_HOST}/hashicorp/random"))
     assert f"Installed {REGISTRY_HOST}/hashicorp/random v3.7.2 (signed, key ID" in output
@@ -304,27 +317,20 @@ def test_init_of_a_private_guarded_namespace_needs_a_token(
 
 def test_init_of_a_module_synced_from_github(
     tofu: Tofu,
-    tofu_bindings: Any,
-    monitor_task: Callable[[str], Any],
-    tofu_remote_factory: Callable[..., Any],
-    tofu_repository_factory: Callable[..., Any],
-    tofu_distribution_factory: Callable[..., Any],
+    opentofu: OpenTofuMirror,
+    tofu_sync: Callable[..., Any],
     tofu_namespace_factory: Callable[..., Any],
 ) -> None:
-    remote = tofu_remote_factory(url="https://registry.opentofu.org/")
-    repository = tofu_repository_factory()
-    distribution = tofu_distribution_factory(repository=repository)
     selection = {
         "namespace": "cloudposse",
         "name": "label",
         "system": "null",
         "versions": ["0.25.0"],
     }
-    response = tofu_bindings.RepositoriesTofuApi.sync(
-        repository.pulp_href, {"remote": remote.pulp_href, "modules": [selection]}
+    tofu_sync(opentofu.repository, opentofu.remote, [], modules=[selection])
+    tofu_namespace_factory(
+        "cloudposse", opentofu.distribution, content_hostname="registry.opentofu.org"
     )
-    monitor_task(response.task)
-    tofu_namespace_factory("cloudposse", distribution, content_hostname="registry.opentofu.org")
 
     config = f'module "label" {{\n  source  = "{REGISTRY_HOST}/cloudposse/label/null"\n  version = "0.25.0"\n}}\n'
     output = _passed(tofu.init(config))

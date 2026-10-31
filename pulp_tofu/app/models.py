@@ -119,9 +119,31 @@ class ProviderVersion(Content):
         """``protocols``, keeping only string elements."""
         return _strings(self.protocols)
 
+    def package_key(self, platform: Platform) -> "PackageKey":
+        """The ``ProviderPackage`` fields that place ``platform``'s archive of this version."""
+        return PackageKey(
+            hostname=self.hostname,
+            namespace=self.namespace,
+            provider_type=self.provider_type,
+            version=self.version,
+            os=platform.os,
+            arch=platform.arch,
+        )
+
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
         unique_together = ("hostname", "namespace", "provider_type", "version", "_pulp_domain")
+
+
+class PackageKey(TypedDict):
+    """``ProviderPackage.repo_key_fields`` with their values."""
+
+    hostname: str
+    namespace: str
+    provider_type: str
+    version: str
+    os: str
+    arch: str
 
 
 class ProviderPackage(Content):

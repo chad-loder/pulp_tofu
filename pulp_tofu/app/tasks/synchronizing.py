@@ -310,12 +310,7 @@ class RegistryStage(Stage):
                     "download document disagrees with signed SHA256SUMS"
                 )
             package = ProviderPackage(
-                hostname=provider_version.hostname,
-                namespace=provider_version.namespace,
-                provider_type=provider_version.provider_type,
-                version=provider_version.version,
-                os=platform.os,
-                arch=platform.arch,
+                **provider_version.package_key(platform),
                 filename=record["filename"],
                 sha256=record["sha256"],
                 size=record["size"],

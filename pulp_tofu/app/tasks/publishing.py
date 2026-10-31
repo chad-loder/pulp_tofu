@@ -135,12 +135,7 @@ def _package(
     provider_version: ProviderVersion, platform: Platform, record: ArchiveRecord, artifact: Artifact
 ) -> ProviderPackage:
     package, _ = ProviderPackage.objects.get_or_create(
-        hostname=provider_version.hostname,
-        namespace=provider_version.namespace,
-        provider_type=provider_version.provider_type,
-        version=provider_version.version,
-        os=platform.os,
-        arch=platform.arch,
+        **provider_version.package_key(platform),
         sha256=record["sha256"],
         _pulp_domain=get_domain(),
         defaults={"filename": record["filename"], "size": record["size"]},
