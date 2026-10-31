@@ -73,9 +73,9 @@ class ResumingHttpDownloader(HttpDownloader):
                 if isinstance(error, never_retry) or not is_retryable(error):
                     raise error
                 fruitless = 0 if self._delivered > before else fruitless + 1
-                if fruitless > self.max_retries:
-                    raise error
                 delay = retry_delay(fruitless, error)
+                if fruitless > self.max_retries or delay is None:
+                    raise error
                 log.info(
                     "Retrying %s at byte %d in %.1fs: %s", self.url, self._delivered, delay, error
                 )

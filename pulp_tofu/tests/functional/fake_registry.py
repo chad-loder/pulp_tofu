@@ -68,6 +68,10 @@ class RegistryState:
     idle_reap_after: float = 1.0
     # Bytes of padding added to the discovery document, to test the size limit.
     discovery_padding: int = 0
+    # The next ``throttle`` requests answer 429 with this Retry-After.
+    throttle: int = 0
+    retry_after: str = "1"
+    times: list[float] = field(default_factory=list)
     # Every JSON document carries an ETag and answers a matching If-None-Match with 304.
     not_modified: int = 0
     if_none_match: list[str] = field(default_factory=list)
@@ -115,15 +119,17 @@ class FakeRegistry:
         for os_name, arch in PLATFORMS:
             name = f"terraform-provider-{ptype}_{version}_{os_name}_{arch}.zip"
             archives[name] = _archive(f"{ptype}-{version}-{os_name}-{arch}")
-        sums = "".join(f"{hashlib.sha256(d).hexdigest()}  {n}\n" for n, d in archives.items())
-        signature = sign(self.key.signer(), sums.encode(), mode=SignatureMode.DETACHED, armor=False)
-        return Release(archives=archives, sums=sums.encode(), signature=signature)
+        return signed_release(self.key, archives)
 
     def respond(self, path: str) -> tuple[int, str, bytes, "_BodyFault"]:
         """Map a request path to status, content type, body and body fault."""
         self.state.requests.append(path)
+        self.state.times.append(time.monotonic())
         if self.state.down:
             return 503, "text/plain", b"down\n", _NO_FAULT
+        if self.state.throttle > 0:
+            self.state.throttle -= 1
+            return 429, "text/plain", b"slow down\n", _BodyFault(retry_after=self.state.retry_after)
         parts = path.strip("/").split("/")
         if path == "/.well-known/terraform.json":
             document: dict[str, object] = {"providers.v1": "/v1/providers/"}
@@ -213,6 +219,7 @@ class _BodyFault:
     truncate_after: int | None = None
     delay: float = 0.0
     etag: str | None = None
+    retry_after: str | None = None
 
 
 _NO_FAULT = _BodyFault()
@@ -220,6 +227,13 @@ _NO_FAULT = _BodyFault()
 
 def _json(document: object) -> tuple[int, str, bytes, _BodyFault]:
     return 200, "application/json", json.dumps(document).encode(), _NO_FAULT
+
+
+def signed_release(key: Tsk, archives: dict[str, bytes]) -> Release:
+    """A release of ``archives`` whose SHA256SUMS ``key`` signs, binary and detached."""
+    sums = "".join(f"{hashlib.sha256(d).hexdigest()}  {n}\n" for n, d in archives.items())
+    signature = sign(key.signer(), sums.encode(), mode=SignatureMode.DETACHED, armor=False)
+    return Release(archives=archives, sums=sums.encode(), signature=signature)
 
 
 def _archive(seed: str) -> bytes:
@@ -293,6 +307,8 @@ def _handler(registry: FakeRegistry) -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            if fault.retry_after is not None:
+                self.send_header("Retry-After", fault.retry_after)
             if fault.etag is not None:
                 self.send_header("ETag", fault.etag)
                 self.send_header("Accept-Ranges", "bytes")

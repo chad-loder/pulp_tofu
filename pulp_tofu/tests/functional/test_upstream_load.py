@@ -47,6 +47,32 @@ def test_concurrent_first_requests_share_one_download(mirror: Mirror) -> None:
     assert mirror.registry.state.hits(f"/{name}") < clients
 
 
+def test_throttled_requests_wait_what_retry_after_asks(mirror: Mirror) -> None:
+    state = mirror.registry.state
+    state.throttle = 2
+    assert mirror.get("index.json").status == 200
+    # Both 429s are answered after their Retry-After of 1 second, not sooner.
+    assert state.times[1] - state.times[0] >= 1.0
+    assert state.times[2] - state.times[1] >= 1.0
+
+    release = mirror.registry.release(mirror.provider_type, "1.0.0")
+    assert release is not None
+    name = release.filename("linux", "amd64")
+    assert mirror.get("1.0.0.json").status == 200
+    state.throttle = 1
+    response = mirror.get(f"1.0.0/{name}")
+    assert (response.status, response.body == release.archives[name]) == (200, True)
+
+
+def test_retry_after_longer_than_a_client_waits_gives_up(mirror: Mirror) -> None:
+    state = mirror.registry.state
+    state.throttle, state.retry_after = 5, "120"
+    started = time.monotonic()
+    assert mirror.get("index.json").status == 502
+    assert time.monotonic() - started < 10
+    assert state.throttle == 4
+
+
 def test_trusted_signing_keys_refuse_other_signers(mirror: Mirror) -> None:
     impostor = Tsk.generate("impostor@example.com").extract_certificate().fingerprint
     mirror.update_remote(signing_keys=[impostor])

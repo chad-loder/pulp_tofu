@@ -1,16 +1,17 @@
 """When and how soon to retry an upstream request.
 
 One policy for registry metadata and archive downloads: retry 429, 5xx and transport
-failures; wait what ``Retry-After`` asks, within ``MAX_RETRY_AFTER``; otherwise back
+failures; wait what ``Retry-After`` asks, and give up when it asks for more than
+``MAX_RETRY_AFTER``, rather than return sooner than the server allows; otherwise back
 off exponentially with full jitter, so clients that failed together do not return
 together.
 """
 
 import random
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 
 from aiohttp import ClientConnectionError, ClientPayloadError, ClientResponseError
+from pyhaul import UnexpectedStatusError
+from pyhaul.transport import TransportHeaders
 
 from pulpcore.plugin.exceptions import SizeValidationError, TimeoutException
 
@@ -35,25 +36,17 @@ def is_retryable(exc: BaseException) -> bool:
     )
 
 
-def retry_delay(failures: int, exc: BaseException) -> float:
-    """Seconds to wait after ``failures`` consecutive failures, the last being ``exc``."""
+def retry_delay(failures: int, exc: BaseException) -> float | None:
+    """Seconds to wait after ``failures`` consecutive failures, the last being ``exc``.
+
+    None means do not retry: the server asked for a longer wait than a waiting client
+    should sit through.
+    """
     if isinstance(exc, ClientResponseError) and exc.headers is not None:
-        asked = _retry_after(exc.headers.get("Retry-After"))
+        # pyhaul parses Retry-After only through its status error.
+        headers = TransportHeaders.from_pairs(exc.headers.items())
+        asked = UnexpectedStatusError(exc.status, headers).retry_after_seconds
         if asked is not None:
-            return min(asked, MAX_RETRY_AFTER)
+            return asked if asked <= MAX_RETRY_AFTER else None
     ceiling = min(MAX_DELAY, BASE_DELAY * 2 ** max(failures - 1, 0))
     return random.uniform(0, ceiling)
-
-
-def _retry_after(value: str | None) -> float | None:
-    if not value:
-        return None
-    if value.strip().isdigit():
-        return float(value.strip())
-    try:
-        when = parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
-    return max((when - datetime.now(UTC)).total_seconds(), 0.0)
