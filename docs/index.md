@@ -41,7 +41,7 @@ For administrators:
 
 ## Understand how it works
 
-- [How Providers Are Verified](site:pulp_tofu/docs/user/learn/verification/): why you
+- [Provider Verification](site:pulp_tofu/docs/user/learn/verification/): why you
   can trust what Pulp serves.
 - [Caching and Upstream Load](site:pulp_tofu/docs/user/learn/caching/): what Pulp
   fetches, when, and what happens when the upstream fails.

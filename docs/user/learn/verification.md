@@ -1,4 +1,4 @@
-# How Providers Are Verified
+# Provider Verification
 
 OpenTofu checks a provider installed from a network mirror only against the hashes the
 mirror lists. It checks no signature itself. Pulp therefore does the checks OpenTofu
