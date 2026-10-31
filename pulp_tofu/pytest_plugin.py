@@ -73,6 +73,17 @@ def tofu_distribution_factory(
 
 
 @pytest.fixture
+def tofu_namespace_factory(tofu_bindings: Any, gen_object_with_cleanup: Any) -> Callable[..., Any]:
+    """Create a registry namespace, deleted at test cleanup."""
+
+    def factory(name: str, distribution: Any, **body: Any) -> Any:  # noqa: ANN401
+        body.update(name=name, distribution=_href(distribution))
+        return gen_object_with_cleanup(tofu_bindings.PulpTofuNamespacesApi, body)
+
+    return factory
+
+
+@pytest.fixture
 def tofu_sync(tofu_bindings: Any, monitor_task: Any) -> Callable[..., Any]:
     """Sync a repository and wait; returns the finished task."""
 

@@ -52,11 +52,12 @@ class Response:
     complete: bool
 
 
-def _fetch(path: str) -> Response:
-    """GET a content path, keeping a partial body if the connection breaks."""
+def fetch(path: str, headers: dict[str, str] | None = None) -> Response:
+    """GET a Pulp path, keeping a partial body if the connection breaks."""
     context = ssl.create_default_context(cafile=str(E2E / "certs" / "ca.crt"))
+    request = urllib.request.Request(f"{PULP_URL}{path}", headers=headers or {})
     try:
-        response = urllib.request.urlopen(f"{PULP_URL}{path}", context=context, timeout=120)
+        response = urllib.request.urlopen(request, context=context, timeout=120)
     except urllib.error.HTTPError as exc:
         return Response(status=exc.code, body=exc.read(), complete=True)
     with response:
@@ -95,7 +96,7 @@ class Mirror:
         return f"/pulp/tofu/{base}/{self.hostname}/{NAMESPACE}/{self.provider_type}/{leaf}"
 
     def get(self, leaf: str) -> Response:
-        return _fetch(self.path(leaf))
+        return fetch(self.path(leaf))
 
     def json(self, leaf: str) -> Any:  # noqa: ANN401
         response = self.get(leaf)
