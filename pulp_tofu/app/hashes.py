@@ -45,7 +45,7 @@ def h1_hash(archive: IO[bytes]) -> H1Hash:
 
     The archive's checksum is signed, but its contents are still upstream data: a zip
     that expands past ``MAX_UNPACKED_BYTES`` or holds more than ``MAX_ENTRIES`` entries
-    is refused. Bytes are counted as they are read, so a lying size header cannot pass.
+    is refused. Bytes are counted as they are read, so an understated size header cannot pass.
 
     Raises:
         zipfile.BadZipFile: ``archive`` is not a zip file.

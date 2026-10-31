@@ -222,7 +222,7 @@ class SessionPool:
             self._retire(session)
             raise
         finally:
-            # Synchronous, so a cancelled request cannot skip it.
+            # Synchronous, so a canceled request cannot skip it.
             self._checkin(session)
 
     async def close_all(self) -> None:

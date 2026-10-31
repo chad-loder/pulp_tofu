@@ -43,7 +43,7 @@ class ArchiveRecord(TypedDict):
 
 
 def parse_archive_records(value: object) -> dict[PlatformKey, ArchiveRecord]:
-    """Restore ``ProviderVersion.archives`` from JSON, dropping entries of the wrong shape.
+    """Restore ``ProviderVersion.archives`` from JSON, dropping malformed entries.
 
     The column is only written by this plugin, so a dropped entry means a corrupted row.
     """
@@ -101,12 +101,12 @@ class ProviderVersion(Content):
         )
 
     def archive_records(self) -> dict[PlatformKey, ArchiveRecord]:
-        """``archives`` with its JSON shape checked and restored."""
+        """``archives`` as typed records, with entries of the wrong structure dropped."""
         return parse_archive_records(self.archives)
 
     @property
     def protocol_versions(self) -> tuple[str, ...]:
-        """``protocols`` with its JSON shape checked."""
+        """``protocols``, keeping only string elements."""
         return _strings(self.protocols)
 
     class Meta:
@@ -186,12 +186,12 @@ class TofuRemote(Remote):
 
     @property
     def include_patterns(self) -> tuple[str, ...]:
-        """``includes`` with its JSON shape checked."""
+        """``includes``, keeping only string elements."""
         return _strings(self.includes)
 
     @property
     def exclude_patterns(self) -> tuple[str, ...]:
-        """``excludes`` with its JSON shape checked."""
+        """``excludes``, keeping only string elements."""
         return _strings(self.excludes)
 
     @property
