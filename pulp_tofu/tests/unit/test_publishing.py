@@ -42,6 +42,9 @@ def test_release_files_are_sorted_by_role() -> None:
         [n.replace("widget", "terraform-widget") for n in RELEASE],
         [n.replace("widget", "widget-") for n in RELEASE],
         [n.replace("widget", "wid--get") for n in RELEASE],
+        [n.replace("1.2.0", "1.2") for n in RELEASE],
+        [n.replace("1.2.0", "01.2.0") for n in RELEASE],
+        [n.replace("1.2.0", "1.2.0+build") for n in RELEASE],
     ],
     ids=[
         "no sums",
@@ -56,6 +59,9 @@ def test_release_files_are_sorted_by_role() -> None:
         "redundant type prefix",
         "trailing dash",
         "double dash",
+        "partial version",
+        "leading zero",
+        "build metadata",
     ],
 )
 def test_incomplete_or_mixed_releases_are_refused(files: list[str]) -> None:

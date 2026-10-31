@@ -26,13 +26,13 @@ from pulp_tofu.app.protocol import (
     PlatformKey,
     ProviderAddress,
     address_allowed,
-    latest_releases,
     protocols_supported,
 )
 from pulp_tofu.app.registry import RegistryClient, UpstreamError, UpstreamVersion
 from pulp_tofu.app.signing import SignatureError
 from pulp_tofu.app.tasks.hashing import record_h1
 from pulp_tofu.app.verify import fetch_provider_version, platform_of
+from pulp_tofu.app.versions import latest_releases
 
 log = logging.getLogger(__name__)
 

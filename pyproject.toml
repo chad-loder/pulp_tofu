@@ -33,6 +33,7 @@ dependencies = [
   "pysequoia>=0.1.33,<0.2",  # Same bounds as pulpcore 3.116.
   "yarl>=1.12.0,<1.25",  # Same bounds as pulpcore 3.116.
   "pyhaul>=1.0.0,<2",  # ETag and Content-Range parsing for resumed downloads.
+  "semantic_version>=2.9,<2.11",  # Same bounds as pulp_ansible.
 ]
 
 [project.urls]
@@ -57,6 +58,8 @@ lint = [
 test = [
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0",
+  "pytest-xdist==3.8.0",
+  "pytest-timeout==2.5.0",
   "aioresponses==0.7.9",
 ]
 
@@ -71,6 +74,8 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 local_partial_types = true
+# Local stubs for dependencies that ship none and have none in typeshed.
+mypy_path = "typings"
 enable_error_code = [
   "possibly-undefined",
   "redundant-expr",

@@ -101,21 +101,6 @@ def protocols_supported(protocols: Sequence[str]) -> bool:
     return any(p.partition(".")[0] in SUPPORTED_PROTOCOL_MAJORS for p in protocols)
 
 
-def latest_releases(versions: Sequence[str], count: int) -> list[str]:
-    """The ``count`` highest ``MAJOR.MINOR.PATCH`` versions, newest first.
-
-    Pre-releases and build metadata are left out, as OpenTofu leaves them out when it
-    resolves an unconstrained provider.
-    """
-    releases = [v for v in versions if v.count(".") == 2 and v.replace(".", "").isdigit()]
-    releases.sort(key=_release_order, reverse=True)
-    return releases[:count]
-
-
-def _release_order(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in version.split("."))
-
-
 def address_allowed(
     address: ProviderAddress, includes: Sequence[str], excludes: Sequence[str]
 ) -> bool:

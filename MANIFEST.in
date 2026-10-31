@@ -13,5 +13,6 @@ include pulp_tofu/app/webserver_snippets/*
 recursive-include pulp_tofu/tests/unit/fixtures *
 exclude pyrightconfig.json
 recursive-exclude dev *
+recursive-exclude typings *
 
 exclude .gitleaks.toml

@@ -6,7 +6,6 @@ from pulp_tofu.app.protocol import (
     address_allowed,
     is_provider_part,
     is_provider_type,
-    latest_releases,
     normalize_hostname,
     protocols_supported,
 )
@@ -68,11 +67,6 @@ def test_protocols_supported(protocols: tuple[str, ...], supported: bool) -> Non
 )
 def test_address_allowed(includes: list[str], excludes: list[str], allowed: bool) -> None:
     assert address_allowed(AWS, includes, excludes) is allowed
-
-
-def test_latest_releases_orders_numerically_and_skips_prereleases() -> None:
-    versions = ["1.9.0", "1.10.0", "2.0.0-rc1", "1.10.0+build", "0.9.12", "1.2"]
-    assert latest_releases(versions, 2) == ["1.10.0", "1.9.0"]
 
 
 @pytest.mark.parametrize("key", ["linux", "linux_", "_amd64", "linux_x86_64", "Linux_amd64"])
