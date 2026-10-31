@@ -29,7 +29,7 @@ curl -u ci -F name=vpc -F system=aws -F version=1.0.0 -F file=@vpc.tar.gz \
 
 | field | rule |
 | --- | --- |
-| `name` | letters, digits, dashes and underscores, at most 64, no dash or underscore at either end; case-sensitive |
+| `name` | letters, digits, dashes and underscores, at most 64, no dash or underscore at either end; matched ignoring case, so a name that differs from an existing one only in case is refused |
 | `system` | the target system, lowercase letters and digits, e.g. `aws` |
 | `version` | SemVer 2.0 without build metadata |
 
@@ -39,6 +39,7 @@ Publishing a version again with the same package changes nothing; with a differe
 package it answers 409.
 
 Publishing needs the `tofu.publish_tofunamespace` permission, as for providers, and a
-registry token with `publish` scope works in place of a password. Downloads of a
+registry token works in place of a password: `publish` scope for a new module name,
+`update` scope for a new version of an existing one. Downloads of a
 private namespace's modules follow [Run a Private Registry](site:pulp_tofu/docs/user/guides/private/):
 with a `ContentRedirectContentGuard`, the location the registry returns is signed.
