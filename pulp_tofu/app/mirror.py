@@ -7,6 +7,7 @@ archives stream through pulpcore's downloader, which checks them against the sig
 SHA-256 while it saves them.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
@@ -208,8 +209,7 @@ class TofuMirror(Handler):
         if cached is not None and now - cached.fetched_at < timedelta(seconds=remote.metadata_ttl):
             return _versions_from_json(cached.versions)
         try:
-            async with RegistryClient(remote) as client:
-                listing = await client.versions(address)
+            listing = await RegistryClient(remote).versions(address)
         except UpstreamNotFound:
             if cached is not None:
                 await cached.adelete()
@@ -316,8 +316,7 @@ class TofuMirror(Handler):
         if existing is not None:
             return existing
         try:
-            async with RegistryClient(remote) as client:
-                info = await client.download(source.address, package.version, platform)
+            info = await RegistryClient(remote).download(source.address, package.version, platform)
         except UpstreamNotFound as exc:
             raise PathNotResolved(str(exc)) from exc
         except UpstreamError as exc:
@@ -354,45 +353,53 @@ async def _fetch_provider_version(
     if not platforms:
         raise UpstreamError(f"{address} {upstream.version} lists no platforms")
     first = PREFERRED_PLATFORM if PREFERRED_PLATFORM in platforms else platforms[0]
-    async with RegistryClient(remote) as client:
-        info = await client.download(address, upstream.version, first)
-        shasums = await client.fetch_bytes(info.shasums_url)
-        signature = await client.fetch_bytes(info.shasums_signature_url)
-        if info.signing_keys:
-            fingerprint = verify_sha256sums(shasums, signature, info.signing_keys)
-        elif address.hostname == KEYLESS_REGISTRY and not remote.require_signatures:
-            fingerprint = ""
-        else:
-            raise SignatureError(f"{address} {upstream.version} offers no signing keys")
-        sums = parse_sha256sums(shasums)
-        if sums.get(info.filename) != info.shasum:
-            raise UpstreamError("SHA256SUMS does not list the download document's shasum")
-        by_digest: dict[str, list[str]] = {}
-        for filename, digest in sums.items():
-            by_digest.setdefault(digest, []).append(filename)
+    client = RegistryClient(remote)
+    info = await client.download(address, upstream.version, first)
+    shasums, signature = await asyncio.gather(
+        client.fetch_bytes(info.shasums_url), client.fetch_bytes(info.shasums_signature_url)
+    )
+    if info.signing_keys:
+        fingerprint = verify_sha256sums(shasums, signature, info.signing_keys)
+    elif address.hostname == KEYLESS_REGISTRY and not remote.require_signatures:
+        fingerprint = ""
+    else:
+        raise SignatureError(f"{address} {upstream.version} offers no signing keys")
+    sums = parse_sha256sums(shasums)
+    if sums.get(info.filename) != info.shasum:
+        raise UpstreamError("SHA256SUMS does not list the download document's shasum")
+    by_digest: dict[str, list[str]] = {}
+    for filename, digest in sums.items():
+        by_digest.setdefault(digest, []).append(filename)
 
-        archives: dict[str, ArchiveRecord] = {}
-        for platform in platforms:
-            key = str(platform)
-            reported = info.packages.get(key)
-            if platform == info.platform:
-                archives[key] = {
-                    "filename": info.filename,
-                    "sha256": info.shasum,
-                    "size": reported.size if reported else None,
-                }
-            elif reported is not None and reported.zh is not None:
-                names = by_digest.get(reported.zh, [])
-                if len(names) != 1:
-                    log.warning("%s %s: %s is not in SHA256SUMS", address, upstream.version, key)
-                    continue
+    archives: dict[str, ArchiveRecord] = {}
+    unreported: list[Platform] = []
+    for platform in platforms:
+        key = str(platform)
+        reported = info.packages.get(key)
+        if platform == info.platform:
+            size = reported.size if reported else None
+            archives[key] = {"filename": info.filename, "sha256": info.shasum, "size": size}
+        elif reported is not None and reported.zh is not None:
+            names = by_digest.get(reported.zh, [])
+            if len(names) == 1:
                 archives[key] = {"filename": names[0], "sha256": reported.zh, "size": reported.size}
             else:
-                other = await client.download(address, upstream.version, platform)
-                if sums.get(other.filename) != other.shasum:
-                    log.warning("%s %s: %s is not in SHA256SUMS", address, upstream.version, key)
-                    continue
-                archives[key] = {"filename": other.filename, "sha256": other.shasum, "size": None}
+                log.warning("%s %s: %s is not in SHA256SUMS", address, upstream.version, key)
+        else:
+            unreported.append(platform)
+    # Registries without a packages map need one download document per platform.
+    others = await asyncio.gather(
+        *(client.download(address, upstream.version, p) for p in unreported)
+    )
+    for platform, other in zip(unreported, others, strict=True):
+        if sums.get(other.filename) == other.shasum:
+            archives[str(platform)] = {
+                "filename": other.filename,
+                "sha256": other.shasum,
+                "size": None,
+            }
+        else:
+            log.warning("%s %s: %s is not in SHA256SUMS", address, upstream.version, platform)
 
     return ProviderVersion(
         hostname=address.hostname,

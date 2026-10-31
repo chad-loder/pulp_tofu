@@ -6,23 +6,27 @@ https://opentofu.org/docs/internals/provider-registry-protocol/: service discove
 objects; nothing past this module touches upstream JSON.
 """
 
+import asyncio
 import json
 import os
-from collections.abc import Mapping
-from dataclasses import dataclass
+import time
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from string import hexdigits
-from types import TracebackType
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, cast
 
-from aiohttp import ClientResponseError
+from aiohttp import ClientError, ClientResponseError, ClientSession
 from asgiref.sync import sync_to_async
 from yarl import URL
+
+from pulpcore.plugin.exceptions import TimeoutException
 
 from .protocol import Platform, ProviderAddress
 
 if TYPE_CHECKING:
-    from aiohttp import ClientSession
+    from pulpcore.plugin.download import DownloaderFactory
 
     from .models import TofuRemote
 
@@ -39,6 +43,10 @@ class UpstreamError(Exception):
 
 class UpstreamNotFound(UpstreamError):
     """The upstream registry answered 404."""
+
+
+class UpstreamUnreachable(UpstreamError):
+    """The connection to the upstream registry failed or timed out."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -139,37 +147,138 @@ def parse_download(document: object, base_url: URL) -> DownloadInfo:
     )
 
 
+@dataclass(slots=True, kw_only=True)
+class _Session:
+    """One remote configuration's long-lived downloader factory and discovered service."""
+
+    stamp: object
+    factory: "DownloaderFactory"
+    http: ClientSession
+    created_at: float = field(default_factory=time.monotonic)
+    leases: int = 0
+    consecutive_failures: int = 0
+    retired: bool = False
+    providers_url: URL | None = None
+
+
+class SessionPool:
+    """Long-lived HTTP sessions for registry metadata, one per remote per process.
+
+    Callers hold a session only inside ``async with pool.lease(remote)``. The pool owns
+    each session's lifecycle: it retires a session when its remote is edited, when it
+    reaches ``max_age``, or after ``failure_threshold`` consecutive transport failures,
+    and closes a retired session when its last lease returns. ``close_all`` runs at
+    content-app shutdown.
+    """
+
+    def __init__(self, *, max_age: float = 900.0, failure_threshold: int = 3) -> None:
+        self._max_age = max_age
+        self._failure_threshold = failure_threshold
+        self._current: dict[object, _Session] = {}
+        self._sessions: dict[int, _Session] = {}
+        self._closing: set[asyncio.Task[None]] = set()
+
+    @asynccontextmanager
+    async def lease(self, remote: "TofuRemote") -> AsyncGenerator[_Session]:
+        """Borrow the remote's session for the body of the ``with`` block."""
+        session = self._checkout(remote)
+        try:
+            yield session
+        except UpstreamUnreachable:
+            session.consecutive_failures += 1
+            raise
+        except UpstreamError:
+            session.consecutive_failures = 0
+            raise
+        else:
+            session.consecutive_failures = 0
+        finally:
+            # Synchronous, so a cancelled request cannot skip it.
+            self._checkin(session)
+
+    async def close_all(self) -> None:
+        """Close every session; the pool is empty afterwards."""
+        sessions = list(self._sessions.values())
+        self._current.clear()
+        self._sessions.clear()
+        for session in sessions:
+            await session.http.close()
+
+    def _checkout(self, remote: "TofuRemote") -> _Session:
+        session = self._current.get(remote.pk)
+        if session is not None and self._worn_out(session, remote):
+            self._retire(session)
+            del self._current[remote.pk]
+            session = None
+        if session is None:
+            session = self._open(remote)
+            self._current[remote.pk] = session
+        session.leases += 1
+        return session
+
+    def _checkin(self, session: _Session) -> None:
+        session.leases -= 1
+        if session.retired and session.leases == 0:
+            self._close(session)
+
+    def _open(self, remote: "TofuRemote") -> _Session:
+        # pulpcore.plugin.download reads Django settings on import; the parsers above
+        # stay importable without them.
+        from pulpcore.plugin.download import DownloaderFactory
+
+        factory = DownloaderFactory(remote)
+        # Every downloader a factory builds shares the factory's session.
+        http: ClientSession = getattr(factory.build(remote.url), "session")  # noqa: B009
+        session = _Session(stamp=remote.pulp_last_updated, factory=factory, http=http)
+        self._sessions[id(session)] = session
+        return session
+
+    def _worn_out(self, session: _Session, remote: "TofuRemote") -> bool:
+        return (
+            session.stamp != remote.pulp_last_updated
+            or time.monotonic() - session.created_at > self._max_age
+            or session.consecutive_failures >= self._failure_threshold
+            or session.http.closed
+        )
+
+    def _retire(self, session: _Session) -> None:
+        session.retired = True
+        if session.leases == 0:
+            self._close(session)
+
+    def _close(self, session: _Session) -> None:
+        self._sessions.pop(id(session), None)
+        # Nothing waits on the close; the set keeps the task alive until it finishes.
+        task = asyncio.get_running_loop().create_task(session.http.close())
+        self._closing.add(task)
+        task.add_done_callback(self._closing.discard)
+
+
+POOL = SessionPool()
+
+
 class RegistryClient:
     """Async calls to one upstream registry through a remote's downloaders.
 
-    Downloads honor the remote's TLS, proxy, timeout, retry and header settings. Use as
-    an async context manager so the shared HTTP session closes with the request.
+    Downloads honor the remote's TLS, proxy, timeout, retry and header settings. Each
+    call leases the remote's pooled session, so metadata requests reuse kept-alive
+    connections across client requests.
     """
 
     def __init__(self, remote: "TofuRemote") -> None:
         self._remote = remote
-        self._session: ClientSession | None = None
-        self._providers_url: URL | None = None
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        if self._session is not None:
-            await self._session.close()
 
     async def providers_url(self) -> URL:
-        """Resolve the registry's ``providers.v1`` base URL by service discovery."""
-        if self._providers_url is None:
-            discovery = URL(self._remote.url).join(URL(DISCOVERY_PATH))
-            document = await self.fetch_json(discovery)
-            self._providers_url = parse_discovery(document, discovery)
-        return self._providers_url
+        """Resolve the registry's ``providers.v1`` base URL by service discovery, once."""
+        async with POOL.lease(self._remote) as session:
+            known = session.providers_url
+        if known is not None:
+            return known
+        discovery = URL(self._remote.url).join(URL(DISCOVERY_PATH))
+        document = await self.fetch_json(discovery)
+        async with POOL.lease(self._remote) as session:
+            session.providers_url = parse_discovery(document, discovery)
+            return session.providers_url
 
     async def versions(self, address: ProviderAddress) -> list[UpstreamVersion]:
         """List a provider's versions."""
@@ -206,17 +315,16 @@ class RegistryClient:
             UpstreamNotFound: The server answered 404.
             UpstreamError: Any other failure, or a body over ``MAX_METADATA_BYTES``.
         """
-        downloader = self._remote.get_downloader(url=str(url))
-        # All of a remote's downloaders share its factory's session.
-        self._session = getattr(downloader, "session", None)
-        try:
-            result = await downloader.run()
-        except ClientResponseError as exc:
-            if exc.status == 404:
-                raise UpstreamNotFound(url) from exc
-            raise UpstreamError(f"{url} answered {exc.status}") from exc
-        except OSError as exc:
-            raise UpstreamError(f"{url} failed: {exc}") from exc
+        async with POOL.lease(self._remote) as session:
+            downloader = self._remote.get_downloader(url=str(url), download_factory=session.factory)
+            try:
+                result = await downloader.run()
+            except ClientResponseError as exc:
+                if exc.status == 404:
+                    raise UpstreamNotFound(url) from exc
+                raise UpstreamError(f"{url} answered {exc.status}") from exc
+            except (ClientError, OSError, TimeoutError, TimeoutException) as exc:
+                raise UpstreamUnreachable(f"{url} failed: {exc}") from exc
         path = Path(result.path)
         try:
             return await sync_to_async(_read_bounded, thread_sensitive=False)(path)
