@@ -8,7 +8,7 @@ GitHub workflows are what Pulp's CI runs. A `justfile` drives local work:
 | `just deps` | `uv sync` from `uv.lock` |
 | `just lint` | ruff, mypy strict and pyright strict |
 | `just test` | unit tests, no Pulp needed |
-| `just e2e` | builds Pulp's image with this checkout, then runs `tofu init` through it three times |
+| `just e2e` | builds Pulp's image with this checkout, then runs `tofu init` through it four times: pull-through, upstream down, Pulp as the registry, and a provider and module published to a private, guarded namespace |
 | `just up` | starts that Pulp without the `tofu init` runs |
 | `just reload` | restarts it on the mounted checkout after a code change; the database stays |
 | `just bindings` | generates the Python bindings from that Pulp with Pulp's generator |
