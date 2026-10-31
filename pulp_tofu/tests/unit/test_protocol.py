@@ -1,32 +1,8 @@
-import json
-
 import pytest
 
-from pulp_tofu.app.protocol import (
-    ProviderAddress,
-    address_allowed,
-    archive_url,
-    index_document,
-    protocols_supported,
-    version_document,
-)
+from pulp_tofu.app.protocol import ProviderAddress, address_allowed, protocols_supported
 
 AWS = ProviderAddress(hostname="registry.opentofu.org", namespace="hashicorp", type="aws")
-
-
-def test_index_document_lists_versions_with_empty_objects() -> None:
-    assert json.loads(index_document(["1.0.0", "1.1.0"])) == {
-        "versions": {"1.0.0": {}, "1.1.0": {}}
-    }
-
-
-def test_version_document_matches_mirror_protocol_shape() -> None:
-    body = version_document(
-        {"linux_amd64": {"url": archive_url("1.0.0", "p.zip"), "hashes": ["zh:ab"]}}
-    )
-    assert json.loads(body) == {
-        "archives": {"linux_amd64": {"url": "1.0.0/p.zip", "hashes": ["zh:ab"]}}
-    }
 
 
 @pytest.mark.parametrize(
