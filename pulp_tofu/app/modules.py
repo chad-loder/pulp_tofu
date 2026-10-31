@@ -25,6 +25,7 @@ from typing import Literal
 from git import GitCommandError, Repo
 from yarl import URL
 
+from .protocol import display_url
 from .publishing import ReleaseError, check_module_archive
 
 # The archive formats go-getter unpacks, by a URL's name or its ``archive`` parameter.
@@ -79,6 +80,8 @@ def parse_location(location: str, base: URL) -> ModuleSource:
     raw = location.strip()
     if raw.startswith(("/", "./", "../")):
         raw = str(base.join(URL(raw)))
+    # Locations may be presigned, so messages carry them without their query.
+    shown = display_url(location)
     # A forced getter ("git::...") is go-getter syntax, not part of the URL.
     getter, separator, address = raw.partition("::")
     if not separator or "/" in getter:
@@ -86,21 +89,24 @@ def parse_location(location: str, base: URL) -> ModuleSource:
     if not getter and address.startswith(_SHORTHAND_GIT_HOSTS):
         getter, address = "git", f"https://{address}"
     if getter not in ("", "git"):
-        raise ModuleSourceError(f"unsupported module getter {getter!r} in {location!r}")
+        raise ModuleSourceError(f"unsupported module getter {getter!r} in {shown!r}")
     # encoded=True keeps the path as written: yarl would otherwise fold go-getter's "//"
     # and any "..", which raw_parts then shows as empty and ".." segments.
     try:
         url = URL(address, encoded=True)
     except ValueError as exc:
-        raise ModuleSourceError(f"module location {location!r} is not a URL") from exc
+        raise ModuleSourceError(f"module location {shown!r} is not a URL") from exc
     if url.scheme != "https" or not url.raw_host:
-        raise ModuleSourceError(f"module location {location!r} is not an HTTPS address")
+        raise ModuleSourceError(f"module location {shown!r} is not an HTTPS address")
+    # Credentials in a URL would reach git's argv and every message naming the source.
+    if url.raw_user or url.raw_password:
+        raise ModuleSourceError(f"module location {shown!r} carries credentials")
     segments = url.raw_parts[1:]
     boundary = segments.index("") if "" in segments else len(segments)
     source_segments = segments[:boundary]
     subdir_segments = [s for s in segments[boundary + 1 :] if s]
     if {".", ".."} & {*source_segments, *subdir_segments}:
-        raise ModuleSourceError(f"module location {location!r} climbs its path")
+        raise ModuleSourceError(f"module location {shown!r} climbs its path")
     source_url = url.with_path("/", encoded=True).joinpath(*source_segments, encoded=True)
     subdir = "/".join(subdir_segments)
     query = url.query
@@ -119,7 +125,7 @@ def parse_location(location: str, base: URL) -> ModuleSource:
         )
     )
     if archive_format is None:
-        raise ModuleSourceError(f"module location {location!r} is neither git nor an archive")
+        raise ModuleSourceError(f"module location {shown!r} is neither git nor an archive")
     clean = source_url.with_query(query).without_query_params("archive").with_fragment(None)
     return ArchiveSource(url=str(clean), format=archive_format, subdir=subdir)
 
@@ -202,7 +208,7 @@ def unpack(source: ArchiveSource, data: bytes, workdir: Path) -> Path:
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
                 archive.extractall(workdir, filter="data")
     except (zipfile.BadZipFile, tarfile.TarError) as exc:
-        raise ModuleSourceError(f"{source.url} is not a {kind} archive") from exc
+        raise ModuleSourceError(f"{display_url(source.url)} is not a {kind} archive") from exc
     return _module_dir(workdir, source.subdir)
 
 
@@ -244,17 +250,16 @@ def pack(module_dir: Path, target: Path) -> None:
         check_module_archive(written)
 
 
-def git_environment(ca_cert: str | None, proxy_url: str | None) -> dict[str, str]:
+def git_environment(ca_cert: str | None, proxy_url: str | None, directory: Path) -> dict[str, str]:
     """Environment variables that give git the remote's CA bundle and proxy.
 
-    The CA bundle is written to a file that lasts as long as the process.
+    The CA bundle is written into ``directory``, which must outlast the checkouts.
     """
     env: dict[str, str] = {}
     if ca_cert:
-        handle = tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False)  # noqa: SIM115
-        with handle:
-            handle.write(ca_cert)
-        env["GIT_SSL_CAINFO"] = handle.name
+        bundle = directory / "remote-ca.pem"
+        bundle.write_text(ca_cert)
+        env["GIT_SSL_CAINFO"] = str(bundle.resolve())
     if proxy_url:
         env["HTTPS_PROXY"] = proxy_url
     return env

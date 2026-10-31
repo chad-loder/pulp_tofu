@@ -93,6 +93,33 @@ def is_module_system(value: str) -> bool:
     return _MODULE_SYSTEM.match(value) is not None
 
 
+def display_url(url: str | URL) -> str:
+    """``url`` fit for messages and logs: without userinfo, query or fragment.
+
+    Upstream URLs are often presigned, so their query strings are credentials.
+    """
+    try:
+        parsed = url if isinstance(url, URL) else URL(url)
+        return str(parsed.with_user(None).with_query(None).with_fragment(None))
+    except (ValueError, TypeError):
+        return "<unparsable URL>"
+
+
+def describe_error(error: BaseException) -> str:
+    """An exception fit for messages and logs.
+
+    ``repr`` of an aiohttp connection error includes its connection key, which holds
+    the proxy's credentials, and ``str`` of a response error includes the request URL;
+    neither is used.
+    """
+    status = getattr(error, "status", None)
+    if isinstance(status, int):
+        return f"{type(error).__name__} (HTTP {status})"
+    if isinstance(error, OSError) and error.strerror:
+        return f"{type(error).__name__}: {error.strerror}"
+    return type(error).__name__
+
+
 def normalize_hostname(value: str) -> str:
     """A registry hostname as OpenTofu's svchost compares hostnames.
 

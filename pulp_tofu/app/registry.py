@@ -37,7 +37,14 @@ from .http_cache import (
     kept_headers,
     monotonic,
 )
-from .protocol import Platform, PlatformKey, ProviderAddress, parse_platform_key
+from .protocol import (
+    Platform,
+    PlatformKey,
+    ProviderAddress,
+    describe_error,
+    display_url,
+    parse_platform_key,
+)
 from .retry import is_retryable, retry_delay
 from .signing import ARCHIVE_NAME
 
@@ -229,9 +236,10 @@ class _Session:
     stamp: object
     loop: asyncio.AbstractEventLoop
     http: ClientSession
-    proxy: str | None
-    proxy_auth: BasicAuth | None
-    auth: BasicAuth | None
+    # Kept out of repr: the proxy URL and both BasicAuths may carry passwords.
+    proxy: str | None = field(repr=False)
+    proxy_auth: BasicAuth | None = field(repr=False)
+    auth: BasicAuth | None = field(repr=False)
     concurrency: asyncio.Semaphore
     throttler: "_Throttler | None"
     created_at: float = field(default_factory=time.monotonic)
@@ -394,7 +402,7 @@ class RegistryClient:
         url = await self._module_url(namespace, name, system, version, "download")
         status, headers, body = await self._fetch_with_retries(str(url), {}, MAX_METADATA_BYTES)
         if status == 404:
-            raise UpstreamNotFound(str(url))
+            raise UpstreamNotFound(display_url(url))
         return parse_module_location(status, headers, body), url
 
     async def _module_url(self, *segments: str) -> URL:
@@ -426,7 +434,7 @@ class RegistryClient:
         try:
             return cast("object", json.loads(body))
         except ValueError as exc:
-            raise UpstreamError(f"{url} did not return JSON") from exc
+            raise UpstreamError(f"{display_url(url)} did not return JSON") from exc
 
     async def fetch_bytes(self, url: URL | str, *, max_bytes: int = MAX_METADATA_BYTES) -> bytes:
         """Fetch a small document into memory, through the HTTP cache.
@@ -457,13 +465,13 @@ class RegistryClient:
         ceiling = float(self._remote.metadata_ttl)
         if status == 304:
             if entry is None:
-                raise UpstreamError(f"{url} answered 304 to an unconditional request")
+                raise UpstreamError(f"{display_url(url)} answered 304 to an unconditional request")
             if entry.revalidate(headers, now, ceiling=ceiling):
                 return _answer(entry, url)
             _CACHE.discard(key)
             return await self._fetch_cached(key, url, max_bytes)
         if status == 204:
-            raise UpstreamError(f"{url} answered 204 where a document was expected")
+            raise UpstreamError(f"{display_url(url)} answered 204 where a document was expected")
         if status == 404:
             storable, fresh_until = freshness(
                 headers, now, default=NEGATIVE_TTL, ceiling=min(ceiling, NEGATIVE_TTL)
@@ -493,7 +501,7 @@ class RegistryClient:
                 return await self._fetch_once(url, conditional, max_bytes)
             except ClientResponseError as exc:
                 if exc.status == 404:
-                    raise UpstreamNotFound(url) from exc
+                    raise UpstreamNotFound(display_url(url)) from exc
                 error: Exception = exc
             except _TRANSPORT_ERRORS as exc:
                 error = exc
@@ -501,8 +509,10 @@ class RegistryClient:
             delay = retry_delay(failures, error)
             if failures >= attempts or not is_retryable(error) or delay is None:
                 if isinstance(error, ClientResponseError):
-                    raise UpstreamError(f"{url} answered {error.status}") from error
-                raise UpstreamUnreachable(f"{url} failed: {error!r}") from error
+                    raise UpstreamError(f"{display_url(url)} answered {error.status}") from error
+                raise UpstreamUnreachable(
+                    f"{display_url(url)} failed: {describe_error(error)}"
+                ) from error
             if failures == 1 and not isinstance(error, ClientResponseError):
                 continue
             await asyncio.sleep(delay)
@@ -541,21 +551,22 @@ class RegistryClient:
                     return 204, headers, b""
                 response.raise_for_status()
                 if response.status != 200:
-                    raise UpstreamError(f"{url} answered {response.status}, not 200")
+                    raise UpstreamError(f"{display_url(url)} answered {response.status}, not 200")
+                too_large = f"{display_url(url)} exceeds the {max_bytes}-byte limit"
                 # A server that announces or sends more than the limit is cut off unread.
                 if (response.content_length or 0) > max_bytes:
-                    raise UpstreamError(f"{url} exceeds the {max_bytes}-byte limit")
+                    raise UpstreamError(too_large)
                 body = bytearray()
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     body += chunk
                     if len(body) > max_bytes:
-                        raise UpstreamError(f"{url} exceeds the {max_bytes}-byte limit")
+                        raise UpstreamError(too_large)
                 return 200, headers, bytes(body)
 
 
 def _answer(entry: CacheEntry, url: str) -> bytes:
     if entry.status == 404:
-        raise UpstreamNotFound(url)
+        raise UpstreamNotFound(display_url(url))
     return entry.body
 
 

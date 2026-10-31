@@ -4,6 +4,8 @@ from pulp_tofu.app.protocol import (
     Platform,
     ProviderAddress,
     address_allowed,
+    describe_error,
+    display_url,
     is_provider_part,
     is_provider_type,
     normalize_hostname,
@@ -48,6 +50,24 @@ def test_provider_parts_follow_opentofu_address_rules(value: str, part: bool, ty
 )
 def test_hostnames_compare_as_opentofu_compares_them(given: str, expected: str) -> None:
     assert normalize_hostname(given) == expected
+
+
+def test_displayed_urls_drop_credentials_and_signatures() -> None:
+    signed = "https://user:pw@files.example/vpc.tar.gz?X-Amz-Signature=abc#frag"
+    assert display_url(signed) == "https://files.example/vpc.tar.gz"
+    assert display_url("::not a url") == "<unparsable URL>"
+
+
+def test_described_errors_leave_out_connection_keys_and_urls() -> None:
+    from aiohttp import ClientResponseError, RequestInfo
+    from multidict import CIMultiDict, CIMultiDictProxy
+    from yarl import URL
+
+    url = URL("https://files.example/a?token=secret")
+    info = RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict[str]()), url)
+    response = ClientResponseError(info, (), status=503)
+    assert describe_error(response) == "ClientResponseError (HTTP 503)"
+    assert "secret" not in describe_error(ConnectionRefusedError(61, "Connection refused"))
 
 
 @pytest.mark.parametrize(

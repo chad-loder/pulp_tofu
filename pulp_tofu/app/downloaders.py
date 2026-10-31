@@ -22,6 +22,7 @@ from pyhaul.transport.aiohttp_adapter import headers_from_aiohttp_response
 from pulpcore.plugin.download import DownloadResult, HttpDownloader
 from pulpcore.plugin.exceptions import TimeoutException
 
+from .protocol import describe_error, display_url
 from .retry import is_retryable, retry_delay
 
 log = logging.getLogger(__name__)
@@ -77,7 +78,11 @@ class ResumingHttpDownloader(HttpDownloader):
                 if fruitless > self.max_retries or delay is None:
                     raise error
                 log.info(
-                    "Retrying %s at byte %d in %.1fs: %s", self.url, self._delivered, delay, error
+                    "Retrying %s at byte %d in %.1fs: %s",
+                    display_url(self.url),
+                    self._delivered,
+                    delay,
+                    describe_error(error),
                 )
                 await asyncio.sleep(delay)
 
@@ -104,7 +109,9 @@ class ResumingHttpDownloader(HttpDownloader):
         resuming = self._delivered > 0
         if resuming:
             if self._validator is None:
-                raise ResumeRefusedError(f"{self.url} offered no strong validator to resume with")
+                raise ResumeRefusedError(
+                    f"{display_url(self.url)}offered no strong validator to resume with"
+                )
             headers = {
                 **headers,
                 "Range": f"bytes={self._delivered}-",
@@ -150,12 +157,16 @@ class ResumingHttpDownloader(HttpDownloader):
     def _check_resumed(self, response: ClientResponse) -> None:
         """Accept only a 206 that continues exactly where the stream stopped."""
         if response.status != 206:
-            raise ResumeRefusedError(f"{self.url} answered {response.status} to a resumed range")
+            raise ResumeRefusedError(
+                f"{display_url(self.url)}answered {response.status} to a resumed range"
+            )
         try:
             content_range = parse_content_range(response.headers.get("Content-Range", ""))
         except ContentRangeError as exc:
-            raise ResumeRefusedError(f"{self.url} sent an unusable Content-Range") from exc
+            raise ResumeRefusedError(
+                f"{display_url(self.url)}sent an unusable Content-Range"
+            ) from exc
         if content_range.start != self._delivered:
-            raise ResumeRefusedError(f"{self.url} resumed at {content_range.start}")
+            raise ResumeRefusedError(f"{display_url(self.url)}resumed at {content_range.start}")
         if self._length is not None and content_range.instance_length != self._length:
-            raise ResumeRefusedError(f"{self.url} changed length during the download")
+            raise ResumeRefusedError(f"{display_url(self.url)}changed length during the download")

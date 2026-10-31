@@ -44,6 +44,7 @@ from .protocol import (
     ProviderAddress,
     address_allowed,
     archive_url,
+    describe_error,
     index_document,
     protocols_supported,
     version_document,
@@ -457,7 +458,9 @@ def _in_background(work: "Coroutine[object, object, object]", what: str) -> None
     def finished(done: "asyncio.Future[object]") -> None:
         _BACKGROUND.discard(task)
         if not done.cancelled() and (exc := done.exception()) is not None:
-            log.warning("Background %s failed: %s", what, exc)
+            # Only this plugin's errors are known to carry no URL query or credentials.
+            known = isinstance(exc, UpstreamError | web.HTTPException)
+            log.warning("Background %s failed: %s", what, exc if known else describe_error(exc))
 
     task.add_done_callback(finished)
 

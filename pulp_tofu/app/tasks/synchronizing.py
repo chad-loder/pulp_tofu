@@ -188,7 +188,10 @@ class RegistryStage(Stage):
                 await progress.aincrement()
         if not self._modules:
             return
-        environment = git_environment(self._remote.ca_cert, _proxy_with_credentials(self._remote))
+        # The task's working directory, which the worker removes when the task ends.
+        environment = git_environment(
+            self._remote.ca_cert, _proxy_with_credentials(self._remote), Path.cwd()
+        )
         async with ProgressReport(
             message="Packing module versions", code="sync.packing.module_versions"
         ) as progress:
