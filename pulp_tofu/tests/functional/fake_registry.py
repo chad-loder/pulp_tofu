@@ -11,7 +11,10 @@ import hashlib
 import io
 import json
 import random
+import select
+import socket
 import ssl
+import struct
 import threading
 import time
 import zipfile
@@ -20,12 +23,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import override
+from typing import Literal, override
 
 from pysequoia import SignatureMode, Tsk, sign
 
 NAMESPACE = "acme"
 PLATFORMS = (("linux", "amd64"), ("linux", "arm64"), ("darwin", "arm64"))
+# Longer than any client timeout the tests expect to hit.
+DROP_HOLD_SECONDS = 120.0
 # Larger than pulpcore's 1 MiB download chunk, so archives stream in several writes.
 ARCHIVE_BYTES = 3 * 1024 * 1024 // 2
 
@@ -57,6 +62,12 @@ class RegistryState:
     bad_signature: bool = False
     unsigned: bool = False
     report_packages: bool = True
+    # How the server reaps a keep-alive connection idle for ``idle_reap_after`` seconds:
+    # "fin" closes it, "rst" resets it, "drop" keeps it open and never answers again,
+    # as a NAT or firewall that forgot the connection would.
+    idle_reap: Literal["fin", "rst", "drop"] | None = None
+    idle_reap_after: float = 1.0
+    connections: int = 0
     requests: list[str] = field(default_factory=list)
 
     def reset(self) -> None:
@@ -225,6 +236,35 @@ def _range_start(range_header: str | None, if_range: str | None, fault: _BodyFau
 def _handler(registry: FakeRegistry) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+
+        @override
+        def handle(self) -> None:
+            registry.state.connections += 1
+            self.close_connection = True
+            self.handle_one_request()
+            while not self.close_connection:
+                if not self._wait_for_next_request():
+                    return
+                self.handle_one_request()
+
+        def _wait_for_next_request(self) -> bool:
+            """Wait for the next keep-alive request; False once the connection is reaped."""
+            mode = registry.state.idle_reap
+            if mode is None:
+                return True
+            pending = isinstance(self.connection, ssl.SSLSocket) and self.connection.pending()
+            ready, _, _ = select.select([self.connection], [], [], registry.state.idle_reap_after)
+            if pending or ready:
+                return True
+            if mode == "rst":
+                self.connection.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                )
+            elif mode == "drop":
+                # Hold the socket and never read it again; the peer hears nothing.
+                time.sleep(DROP_HOLD_SECONDS)
+            self.close_connection = True
+            return False
 
         def do_GET(self) -> None:
             status, content_type, body, fault = registry.respond(self.path)
