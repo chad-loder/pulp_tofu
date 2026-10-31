@@ -14,8 +14,6 @@ from .fake_registry import NAMESPACE
 
 pytestmark = pytest.mark.parallel
 
-REGISTRY = "/tofu/v1/providers"
-
 
 @pytest.fixture
 def served(
@@ -39,18 +37,20 @@ def _json(path: str, headers: dict[str, str] | None = None) -> Any:  # noqa: ANN
     return json.loads(response.body)
 
 
-def test_discovery_names_the_provider_and_module_services() -> None:
+def test_discovery_names_the_provider_and_module_services(
+    providers_path: str, modules_path: str
+) -> None:
     assert _json("/.well-known/terraform.json") == {
-        "providers.v1": f"{REGISTRY}/",
-        "modules.v1": "/tofu/v1/modules/",
+        "providers.v1": f"{providers_path}/",
+        "modules.v1": f"{modules_path}/",
     }
 
 
 def test_registry_serves_versions_and_signed_downloads(
-    mirror: Mirror, served: Callable[..., Any]
+    mirror: Mirror, served: Callable[..., Any], providers_path: str
 ) -> None:
     served()
-    base = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}"
+    base = f"{providers_path}/{NAMESPACE}/{mirror.provider_type}"
 
     versions = _json(f"{base}/versions")["versions"]
     assert {v["version"] for v in versions} == {"1.0.0", "1.1.0"}
@@ -76,20 +76,20 @@ def test_registry_serves_versions_and_signed_downloads(
 
 
 def test_unknown_namespace_and_provider_are_not_found(
-    mirror: Mirror, served: Callable[..., Any]
+    mirror: Mirror, served: Callable[..., Any], providers_path: str
 ) -> None:
     served()
-    assert fetch(f"{REGISTRY}/nobody/{mirror.provider_type}/versions").status == 404
-    assert fetch(f"{REGISTRY}/{NAMESPACE}/missing/versions").status == 404
-    base = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}"
+    assert fetch(f"{providers_path}/nobody/{mirror.provider_type}/versions").status == 404
+    assert fetch(f"{providers_path}/{NAMESPACE}/missing/versions").status == 404
+    base = f"{providers_path}/{NAMESPACE}/{mirror.provider_type}"
     assert fetch(f"{base}/9.9.9/download/linux/amd64").status == 404
 
 
 def test_private_namespace_requires_a_reader(
-    mirror: Mirror, served: Callable[..., Any], bindings_cfg: Any
+    mirror: Mirror, served: Callable[..., Any], bindings_cfg: Any, providers_path: str
 ) -> None:
     served(private=True)
-    path = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}/versions"
+    path = f"{providers_path}/{NAMESPACE}/{mirror.provider_type}/versions"
     assert fetch(path).status == 401
     login = f"{bindings_cfg.username}:{bindings_cfg.password}".encode()
     admin = {"Authorization": "Basic " + base64.b64encode(login).decode()}
@@ -97,10 +97,13 @@ def test_private_namespace_requires_a_reader(
 
 
 def test_private_namespace_reads_follow_roles_at_every_level(
-    mirror: Mirror, served: Callable[..., Any], gen_user: Callable[..., Any]
+    mirror: Mirror,
+    served: Callable[..., Any],
+    gen_user: Callable[..., Any],
+    providers_path: str,
 ) -> None:
     namespace = served(private=True)
-    path = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}/versions"
+    path = f"{providers_path}/{NAMESPACE}/{mirror.provider_type}/versions"
 
     def basic(user: Any) -> dict[str, str]:  # noqa: ANN401
         login = f"{user.username}:{user.password}".encode()
@@ -123,6 +126,7 @@ def test_token_reads_only_its_namespaces(
     tofu_bindings: Any,
     tofu_namespace_factory: Callable[..., Any],
     gen_object_with_cleanup: Callable[..., Any],
+    providers_path: str,
 ) -> None:
     namespace = served(private=True)
     other = tofu_namespace_factory(f"other{secrets.token_hex(4)}", mirror.distribution)
@@ -132,7 +136,7 @@ def test_token_reads_only_its_namespaces(
         body.update(name="ci", namespaces=hrefs)
         return str(gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token)
 
-    path = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}/versions"
+    path = f"{providers_path}/{NAMESPACE}/{mirror.provider_type}/versions"
     good = token(namespace)
     assert fetch(path, _bearer(good)).status == 200
     assert fetch(path, _bearer(token(other))).status == 403
@@ -146,6 +150,7 @@ def test_guarded_distribution_serves_preauthenticated_urls(
     served: Callable[..., Any],
     pulpcore_bindings: Any,
     gen_object_with_cleanup: Callable[..., Any],
+    providers_path: str,
 ) -> None:
     served()
     guard = gen_object_with_cleanup(
@@ -156,7 +161,7 @@ def test_guarded_distribution_serves_preauthenticated_urls(
     )
     mirror.monitor_task(response.task)
 
-    base = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}"
+    base = f"{providers_path}/{NAMESPACE}/{mirror.provider_type}"
     url = URL(_json(f"{base}/1.1.0/download/linux/amd64")["download_url"])
     assert "validate_token" in url.query
     assert fetch(url.raw_path_qs).status == 200

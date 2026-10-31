@@ -92,5 +92,19 @@ oci-env test -i -p pulp_tofu functional -- --timeout=300 -m parallel -n 8
 oci-env test -p pulp_tofu functional -- --timeout=300 -m "not parallel"
 ```
 
+CI also runs the suite on object storage: the `s3` scenario stores content in
+[RustFS](https://github.com/rustfs/rustfs) with domains enabled and the API under
+`/rerouted/djnd/`, and the `azure` scenario stores it in Azurite with domains enabled.
+To run the `s3` shape in oci-env, add to `compose.env`:
+
+```sh
+COMPOSE_PROFILE=s3_storage
+PULP_DOMAIN_ENABLED=true
+PULP_API_ROOT=/rerouted/djnd/
+```
+
+With domains enabled, the published bindings do not fit: generate both pulpcore's and
+pulp_tofu's from that server, as above.
+
 The API and content servers reload when the checkout changes. After changing task
 code, restart the workers with `oci-env prestart`.

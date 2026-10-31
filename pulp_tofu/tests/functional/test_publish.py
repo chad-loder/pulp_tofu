@@ -19,15 +19,13 @@ from .fake_registry import FakeRegistry, Release, signed_release
 
 pytestmark = pytest.mark.parallel
 
-REGISTRY = "/tofu/v1/providers"
-
 
 def test_published_release_is_served_by_the_registry(
     publisher: Publisher, release: Release, provider_type: str
 ) -> None:
     publisher.publish(release_files(provider_type, "1.0.0", release))
 
-    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    base = f"{publisher.providers}/{publisher.namespace.name}/{provider_type}"
     versions = json.loads(fetch(f"{base}/versions").body)["versions"]
     assert [(v["version"], v["protocols"]) for v in versions] == [("1.0.0", ["6.0"])]
     document = json.loads(fetch(f"{base}/1.0.0/download/linux/amd64").body)
@@ -36,7 +34,9 @@ def test_published_release_is_served_by_the_registry(
     assert fetch(URL(document["download_url"]).path).body == archive
     hashes = document["packages"]["linux_amd64"]["hashes"]
     assert any(h.startswith("h1:") for h in hashes)
-    mixed = f"{REGISTRY}/{publisher.namespace.name.upper()}/{provider_type.title()}/versions"
+    mixed = (
+        f"{publisher.providers}/{publisher.namespace.name.upper()}/{provider_type.title()}/versions"
+    )
     assert json.loads(fetch(mixed).body)["versions"] == versions
 
     # Publishing the same release again changes nothing.
@@ -67,7 +67,7 @@ def test_release_signed_by_another_key_is_refused(
     with pytest.raises(PulpTaskError) as error:
         publisher.publish(files)
     assert "does not verify" in error.value.task.error["description"]
-    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    base = f"{publisher.providers}/{publisher.namespace.name}/{provider_type}"
     assert fetch(f"{base}/versions").status == 404
 
 
@@ -107,7 +107,7 @@ def test_release_job_publishes_with_a_publish_token(
         publisher.publish(files, token=token("read"))
     assert error.value.status == 403
     publisher.publish(files, token=token("publish"))
-    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    base = f"{publisher.providers}/{publisher.namespace.name}/{provider_type}"
     assert fetch(f"{base}/versions").status == 200
 
 
@@ -147,12 +147,9 @@ def test_update_token_publishes_only_versions_of_existing_providers(
     assert later is not None
     publisher.publish(release_files(provider_type, "1.1.0", later), token=update)
     versions = json.loads(
-        fetch(f"{REGISTRY}/{publisher.namespace.name}/{provider_type}/versions").body
+        fetch(f"{publisher.providers}/{publisher.namespace.name}/{provider_type}/versions").body
     )
     assert {v["version"] for v in versions["versions"]} == {"1.0.0", "1.1.0"}
-
-
-MODULES = "/tofu/v1/modules"
 
 
 def test_published_module_is_served_by_the_registry(publisher: Publisher) -> None:
@@ -160,7 +157,7 @@ def test_published_module_is_served_by_the_registry(publisher: Publisher) -> Non
     publisher.publish_module("1.0.0", package)
     publisher.publish_module("1.0.0", package)
 
-    base = f"{MODULES}/{publisher.namespace.name}/vpc/aws"
+    base = f"{publisher.modules}/{publisher.namespace.name}/vpc/aws"
     listing = json.loads(fetch(f"{base}/versions").body)
     assert listing == {"modules": [{"versions": [{"version": "1.0.0"}]}]}
     location = json.loads(fetch(f"{base}/1.0.0/download").body)["location"]
@@ -181,7 +178,7 @@ def test_module_names_ignore_case(publisher: Publisher) -> None:
 
     namespace = publisher.namespace.name
     for path in (f"{namespace}/Vpc/aws", f"{namespace.upper()}/vpc/AWS"):
-        listing = json.loads(fetch(f"{MODULES}/{path}/versions").body)
+        listing = json.loads(fetch(f"{publisher.modules}/{path}/versions").body)
         assert listing == {"modules": [{"versions": [{"version": "1.0.0"}]}]}
     with pytest.raises(ApiException) as error:
         publisher.publish_module("1.1.0", module_package(("main.tf", b"# lookalike\n")), name="vpc")
@@ -210,7 +207,7 @@ def test_unsigned_release_is_signed_by_the_namespace_signing_service(
     )
     publisher.publish(list(release.archives.items()))
 
-    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    base = f"{publisher.providers}/{publisher.namespace.name}/{provider_type}"
     document = json.loads(fetch(f"{base}/1.0.0/download/linux/amd64").body)
     [key] = document["signing_keys"]["gpg_public_keys"]
     assert key["key_id"] == service.pubkey_fingerprint[-16:].upper()
@@ -250,7 +247,7 @@ def test_release_published_from_uploaded_artifacts(
     )
     with urllib.request.urlopen(request, context=tls_context(), timeout=60) as response:
         publisher.monitor_task(json.loads(response.read())["task"])
-    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    base = f"{publisher.providers}/{publisher.namespace.name}/{provider_type}"
     assert fetch(f"{base}/versions").status == 200
 
 

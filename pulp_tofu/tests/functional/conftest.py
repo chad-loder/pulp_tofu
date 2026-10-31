@@ -107,8 +107,8 @@ class Mirror:
     provider_type: str
 
     def path(self, leaf: str) -> str:
-        base = self.distribution.base_path
-        return f"/pulp/tofu/{base}/{self.hostname}/{NAMESPACE}/{self.provider_type}/{leaf}"
+        base = URL(self.distribution.base_url).path
+        return f"{base}{self.hostname}/{NAMESPACE}/{self.provider_type}/{leaf}"
 
     def get(self, leaf: str) -> Response:
         return fetch(self.path(leaf))
@@ -179,6 +179,24 @@ def tls_material(directory: Path, host: str) -> tuple[Path, Path, str]:
     return cert_path, key_path, ca.public_bytes(serialization.Encoding.PEM).decode()
 
 
+def _registry_service(pulp_settings: Any, service: str) -> str:  # noqa: ANN401
+    prefix = str(pulp_settings.TOFU_REGISTRY_PATH_PREFIX).strip("/")
+    domain = [str(pulp_settings.TOFU_REGISTRY_DOMAIN)] if pulp_settings.DOMAIN_ENABLED else []
+    return "/" + "/".join([prefix, *domain, "v1", service])
+
+
+@pytest.fixture(scope="session")
+def providers_path(pulp_settings: Any) -> str:  # noqa: ANN401
+    """The registry's provider service path, without the trailing slash."""
+    return _registry_service(pulp_settings, "providers")
+
+
+@pytest.fixture(scope="session")
+def modules_path(pulp_settings: Any) -> str:  # noqa: ANN401
+    """The registry's module service path, without the trailing slash."""
+    return _registry_service(pulp_settings, "modules")
+
+
 @pytest.fixture(scope="session")
 def upstream(
     tmp_path_factory: pytest.TempPathFactory,
@@ -235,6 +253,8 @@ class Publisher:
     namespace: Any
     repository: Any
     distribution: Any
+    providers: str
+    modules: str
 
     def publish(self, files: list[tuple[str, bytes]], token: str | None = None) -> Any:  # noqa: ANN401
         if token is None:
@@ -299,6 +319,8 @@ def publisher(
     tofu_distribution_factory: Callable[..., Any],
     tofu_namespace_factory: Callable[..., Any],
     upstream: tuple[FakeRegistry, int, str],
+    providers_path: str,
+    modules_path: str,
 ) -> Publisher:
     registry, _, _ = upstream
     keyring = gen_object_with_cleanup(
@@ -319,6 +341,8 @@ def publisher(
         namespace=namespace,
         repository=repository,
         distribution=distribution,
+        providers=providers_path,
+        modules=modules_path,
     )
 
 

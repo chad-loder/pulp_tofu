@@ -25,6 +25,12 @@ fi
 
 COMPONENT_VERSION="$(python -c 'import tomllib; from packaging.version import Version; print(Version(tomllib.load(open("pyproject.toml", "rb"))["tool"]["bumpversion"]["current_version"]))')"
 COMPONENT_SOURCE="./pulp_tofu/dist/pulp_tofu-${COMPONENT_VERSION}-py3-none-any.whl"
+if [ "$TEST" = "s3" ]; then
+  COMPONENT_SOURCE="${COMPONENT_SOURCE} pulpcore[s3]"
+fi
+if [ "$TEST" = "azure" ]; then
+  COMPONENT_SOURCE="${COMPONENT_SOURCE} pulpcore[azure,uvloop]"
+fi
 
 if [[ "$TEST" = "pulp" ]]; then
   python3 .ci/scripts/calc_constraints.py -u pyproject.toml > upperbounds_constraints.txt
