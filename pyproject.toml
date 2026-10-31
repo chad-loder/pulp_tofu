@@ -104,6 +104,7 @@ module = [
   "pulp_tofu.app.registry",
   "pulp_tofu.app.serializers",
   "pulp_tofu.app.tasks.*",
+  "pulp_tofu.app.verify",
   "pulp_tofu.app.viewsets",
 ]
 disallow_untyped_calls = false

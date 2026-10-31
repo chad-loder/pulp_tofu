@@ -17,7 +17,7 @@ from pathlib import Path
 from string import hexdigits
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import ClientError, ClientResponseError, ClientSession
+from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
 from asgiref.sync import sync_to_async
 from yarl import URL
 
@@ -35,6 +35,13 @@ PROVIDERS_SERVICE = "providers.v1"
 
 # Upper bound on any registry JSON document or SHA256SUMS file read into memory.
 MAX_METADATA_BYTES = 16 * 1024 * 1024
+
+# Seconds for the first, pooled attempt at a metadata request when the remote sets no
+# timeout of its own. Registry documents are small, so a read that stalls this long is a
+# dead connection, not a slow one.
+PROBE_READ_TIMEOUT = 5.0
+PROBE_CONNECT_TIMEOUT = 10.0
+PROBE_TOTAL_TIMEOUT = 60.0
 
 
 class UpstreamError(Exception):
@@ -152,29 +159,30 @@ class _Session:
     """One remote configuration's long-lived downloader factory and discovered service."""
 
     stamp: object
+    loop: asyncio.AbstractEventLoop
     factory: "DownloaderFactory"
     http: ClientSession
     created_at: float = field(default_factory=time.monotonic)
     leases: int = 0
-    consecutive_failures: int = 0
     retired: bool = False
     providers_url: URL | None = None
 
 
 class SessionPool:
-    """Long-lived HTTP sessions for registry metadata, one per remote per process.
+    """Long-lived HTTP sessions for registry metadata, one per remote per event loop.
 
     Callers hold a session only inside ``async with pool.lease(remote)``. The pool owns
     each session's lifecycle: it retires a session when its remote is edited, when it
-    reaches ``max_age``, or after ``failure_threshold`` consecutive transport failures,
-    and closes a retired session when its last lease returns. ``close_all`` runs at
-    content-app shutdown.
+    reaches ``max_age``, or on the first transport failure, since that failure usually
+    means the upstream reaped idle connections the session still holds. A retired
+    session closes when its last lease returns. ``close_all`` runs at content-app
+    shutdown. Sessions are per event loop because aiohttp binds them to one; task
+    workers run each task's pipeline on a loop of its own.
     """
 
-    def __init__(self, *, max_age: float = 900.0, failure_threshold: int = 3) -> None:
+    def __init__(self, *, max_age: float = 900.0) -> None:
         self._max_age = max_age
-        self._failure_threshold = failure_threshold
-        self._current: dict[object, _Session] = {}
+        self._current: dict[tuple[int, object], _Session] = {}
         self._sessions: dict[int, _Session] = {}
         self._closing: set[asyncio.Task[None]] = set()
 
@@ -185,13 +193,8 @@ class SessionPool:
         try:
             yield session
         except UpstreamUnreachable:
-            session.consecutive_failures += 1
+            self._retire(session)
             raise
-        except UpstreamError:
-            session.consecutive_failures = 0
-            raise
-        else:
-            session.consecutive_failures = 0
         finally:
             # Synchronous, so a cancelled request cannot skip it.
             self._checkin(session)
@@ -205,14 +208,15 @@ class SessionPool:
             await session.http.close()
 
     def _checkout(self, remote: "TofuRemote") -> _Session:
-        session = self._current.get(remote.pk)
-        if session is not None and self._worn_out(session, remote):
+        loop = asyncio.get_running_loop()
+        key = (id(loop), remote.pk)
+        session = self._current.get(key)
+        if session is not None and (session.loop is not loop or self._worn_out(session, remote)):
             self._retire(session)
-            del self._current[remote.pk]
             session = None
         if session is None:
-            session = self._open(remote)
-            self._current[remote.pk] = session
+            session = self._open(remote, loop)
+            self._current[key] = session
         session.leases += 1
         return session
 
@@ -221,7 +225,7 @@ class SessionPool:
         if session.retired and session.leases == 0:
             self._close(session)
 
-    def _open(self, remote: "TofuRemote") -> _Session:
+    def _open(self, remote: "TofuRemote", loop: asyncio.AbstractEventLoop) -> _Session:
         # pulpcore.plugin.download reads Django settings on import; the parsers above
         # stay importable without them.
         from pulpcore.plugin.download import DownloaderFactory
@@ -229,27 +233,32 @@ class SessionPool:
         factory = DownloaderFactory(remote)
         # Every downloader a factory builds shares the factory's session.
         http: ClientSession = getattr(factory.build(remote.url), "session")  # noqa: B009
-        session = _Session(stamp=remote.pulp_last_updated, factory=factory, http=http)
+        session = _Session(stamp=remote.pulp_last_updated, loop=loop, factory=factory, http=http)
         self._sessions[id(session)] = session
         return session
 
     def _worn_out(self, session: _Session, remote: "TofuRemote") -> bool:
         return (
-            session.stamp != remote.pulp_last_updated
+            session.retired
+            or session.stamp != remote.pulp_last_updated
             or time.monotonic() - session.created_at > self._max_age
-            or session.consecutive_failures >= self._failure_threshold
             or session.http.closed
         )
 
     def _retire(self, session: _Session) -> None:
         session.retired = True
+        for key, current in list(self._current.items()):
+            if current is session:
+                del self._current[key]
         if session.leases == 0:
             self._close(session)
 
     def _close(self, session: _Session) -> None:
         self._sessions.pop(id(session), None)
+        if session.loop.is_closed():
+            return  # Its connections went with the loop.
         # Nothing waits on the close; the set keeps the task alive until it finishes.
-        task = asyncio.get_running_loop().create_task(session.http.close())
+        task = session.loop.create_task(session.http.close())
         self._closing.add(task)
         task.add_done_callback(self._closing.discard)
 
@@ -311,25 +320,50 @@ class RegistryClient:
     async def fetch_bytes(self, url: URL | str) -> bytes:
         """Fetch a small document into memory.
 
+        The first attempt runs on the pooled session without pulpcore's retries and with
+        a short read timeout, so a connection the upstream reaped while idle fails fast:
+        at once after a close or reset, within ``PROBE_READ_TIMEOUT`` after a silent
+        drop. That failure retires the session, and the second attempt runs on fresh
+        connections with the remote's normal retries.
+
         Raises:
             UpstreamNotFound: The server answered 404.
             UpstreamError: Any other failure, or a body over ``MAX_METADATA_BYTES``.
         """
-        async with POOL.lease(self._remote) as session:
-            downloader = self._remote.get_downloader(url=str(url), download_factory=session.factory)
+        try:
+            path = await self._fetch_to_file(url, probe=True)
+        except UpstreamUnreachable:
+            path = await self._fetch_to_file(url, probe=False)
+        try:
+            return await sync_to_async(_read_bounded, thread_sensitive=False)(path)
+        finally:
+            await sync_to_async(_unlink, thread_sensitive=False)(path)
+
+    async def _fetch_to_file(self, url: URL | str, *, probe: bool) -> Path:
+        remote = self._remote
+        options: dict[str, object] = {}
+        extra_data: dict[str, object] = {}
+        if probe:
+            options["max_retries"] = 0
+            timeout = ClientTimeout(
+                total=remote.total_timeout or PROBE_TOTAL_TIMEOUT,
+                sock_connect=remote.sock_connect_timeout or PROBE_CONNECT_TIMEOUT,
+                sock_read=remote.sock_read_timeout or PROBE_READ_TIMEOUT,
+            )
+            extra_data["request_kwargs"] = {"timeout": timeout}
+        async with POOL.lease(remote) as session:
+            downloader = remote.get_downloader(
+                url=str(url), download_factory=session.factory, **options
+            )
             try:
-                result = await downloader.run()
+                result = await downloader.run(extra_data=extra_data)
             except ClientResponseError as exc:
                 if exc.status == 404:
                     raise UpstreamNotFound(url) from exc
                 raise UpstreamError(f"{url} answered {exc.status}") from exc
             except (ClientError, OSError, TimeoutError, TimeoutException) as exc:
                 raise UpstreamUnreachable(f"{url} failed: {exc}") from exc
-        path = Path(result.path)
-        try:
-            return await sync_to_async(_read_bounded, thread_sensitive=False)(path)
-        finally:
-            await sync_to_async(_unlink, thread_sensitive=False)(path)
+        return Path(result.path)
 
 
 def _read_bounded(path: Path) -> bytes:
