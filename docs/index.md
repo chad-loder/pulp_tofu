@@ -9,6 +9,8 @@ of the [Pulp Project](site:/) and assumes some familiarity with the
 [pulpcore documentation](site:pulpcore/).
 
 To get started, [mirror providers for OpenTofu](site:pulp_tofu/docs/user/guides/mirror/).
+[pulp-cli-tofu](https://github.com/chad-loder/pulp-cli-tofu) adds `pulp tofu` commands to
+[pulp-cli](https://github.com/pulp/pulp-cli).
 
 ## Features
 

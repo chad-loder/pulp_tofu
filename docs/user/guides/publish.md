@@ -51,11 +51,11 @@ curl -u ci $(for f in terraform-provider-widget_1.2.0_*; do printf -- '-F files=
 | `terraform-provider-<type>_<version>_<os>_<arch>.zip` | one or more |
 | `terraform-provider-<type>_<version>_SHA256SUMS` | yes, unless Pulp signs |
 | `terraform-provider-<type>_<version>_SHA256SUMS.sig` | yes, a binary detached signature, unless Pulp signs |
+| `terraform-provider-<type>_<version>_manifest.json` | no; without it the protocol is 5.0 |
 
 When the namespace has a signing service, a release may come without the signature, or
 without the signature and `SHA256SUMS`, and Pulp signs it; see
 [Sign Releases with Pulp](site:pulp_tofu/docs/admin/guides/signing/).
-| `terraform-provider-<type>_<version>_manifest.json` | no; without it the protocol is 5.0 |
 
 Large archives can be uploaded first, in chunks, through pulpcore's `uploads` or
 `artifacts` endpoints; the release then names them, keyed by release filename:
@@ -66,6 +66,14 @@ curl -u ci --json '{"artifacts": {"terraform-provider-widget_1.2.0_linux_amd64.z
 ```
 
 `publish_module` likewise takes `artifact` in place of `file`.
+
+With [pulp-cli-tofu](https://github.com/chad-loder/pulp-cli-tofu), one command uploads
+each file as an artifact, in chunks, and publishes the release:
+
+```bash
+pulp tofu namespace publish --name acme dist/terraform-provider-widget_1.2.0_*
+pulp tofu namespace publish-module --name acme --module vpc --system aws --version 1.0.0 vpc.tar.gz
+```
 
 The request stores the archives and returns a task. The task fails if the signature
 does not verify against the keyring, or if the uploaded archives and the archives
