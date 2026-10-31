@@ -1,1 +1,0 @@
-Fixed global and domain roles being ignored when reading a private namespace through the registry and when naming namespaces, distributions and keyrings in tokens and namespaces.
