@@ -1,5 +1,6 @@
 """Content, remote, repository and distribution models for OpenTofu providers."""
 
+from functools import partial
 from logging import getLogger
 from typing import TYPE_CHECKING, TypedDict, override
 
@@ -21,6 +22,7 @@ from pulpcore.plugin.util import get_domain, get_domain_pk
 from .protocol import ProviderAddress
 
 if TYPE_CHECKING:
+    from pulpcore.plugin.download import DownloaderFactory
     from pulpcore.plugin.models import ContentArtifact, RepositoryVersion, Task
 
 logger = getLogger(__name__)
@@ -144,6 +146,22 @@ class TofuRemote(Remote):
         url = URL(self.url)
         host = (url.host or "").lower()
         return f"{host}:{url.explicit_port}" if url.explicit_port not in (None, 443) else host
+
+    @property
+    @override
+    def download_factory(self) -> "DownloaderFactory":
+        """pulpcore's factory, building resuming downloaders for http and https."""
+        factory: DownloaderFactory | None = getattr(self, "_download_factory", None)
+        if factory is None:
+            # Both modules read Django settings on import, so they load after the models.
+            from pulpcore.plugin.download import DownloaderFactory as Factory
+
+            from .downloaders import ResumingHttpDownloader
+
+            downloader = partial(ResumingHttpDownloader, total_timeout=self.total_timeout)
+            factory = Factory(self, downloader_overrides={"http": downloader, "https": downloader})
+            self._download_factory = factory
+        return factory
 
     @override
     def get_remote_artifact_url(

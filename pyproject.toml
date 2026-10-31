@@ -32,6 +32,7 @@ dependencies = [
   "djangorestframework>=3.14.0,<=3.17.1",  # Same bounds as pulpcore 3.116.
   "pysequoia>=0.1.33,<0.2",  # Same bounds as pulpcore 3.116.
   "yarl>=1.12.0,<1.25",  # Same bounds as pulpcore 3.116.
+  "pyhaul>=1.0.0,<2",  # ETag and Content-Range parsing for resumed downloads.
 ]
 
 [project.urls]
@@ -97,6 +98,7 @@ implicit_reexport = true
 # handler: calls into pulpcore and the Any it returns stay unchecked here and nowhere else.
 [[tool.mypy.overrides]]
 module = [
+  "pulp_tofu.app.downloaders",
   "pulp_tofu.app.mirror",
   "pulp_tofu.app.models",
   "pulp_tofu.app.registry",
