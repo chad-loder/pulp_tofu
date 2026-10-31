@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import NewType
 
 from pysequoia import Cert, Sig, verify
@@ -54,14 +55,14 @@ def verify_sha256sums(
     armored_keys: Sequence[str],
     *,
     trusted: frozenset[Fingerprint] = frozenset(),
-) -> Fingerprint:
+) -> Signer:
     """Verify a detached signature over ``document`` against any of ``armored_keys``.
 
     A non-empty ``trusted`` admits only certificates with those fingerprints, whatever
     keys the registry offers.
 
     Returns:
-        The fingerprint of the certificate that verified the signature.
+        The certificate that verified the signature.
 
     Raises:
         SignatureError: No usable key was offered, or no key verifies.
@@ -85,8 +86,21 @@ def verify_sha256sums(
 
     for cert in certs:
         if _verifies(document, sig, cert):
-            return Fingerprint(cert.fingerprint)
+            return Signer(fingerprint=Fingerprint(cert.fingerprint), public_key=str(cert))
     raise SignatureError("the signature does not verify against the offered keys")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Signer:
+    """The certificate that verified a signature: its fingerprint and armored public key."""
+
+    fingerprint: Fingerprint
+    public_key: str
+
+    @property
+    def key_id(self) -> str:
+        """The 16-digit uppercase key ID OpenTofu's registry protocol lists."""
+        return self.fingerprint[-16:].upper()
 
 
 def parse_fingerprint(value: str) -> Fingerprint | None:

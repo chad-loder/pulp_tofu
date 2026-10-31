@@ -90,6 +90,7 @@ class ProviderVersion(Content):
     shasums = models.BinaryField()
     shasums_signature = models.BinaryField()
     signing_key_fingerprint = models.TextField(blank=True, default="")
+    signing_key = models.TextField(blank=True, default="")
     archives = models.JSONField(default=dict)
     _pulp_domain = models.ForeignKey("core.Domain", default=get_domain_pk, on_delete=models.PROTECT)
 
@@ -336,4 +337,30 @@ class TofuDistribution(Distribution):
         default_related_name = "%(app_label)s_%(model_name)s"
         permissions = [
             ("manage_roles_tofudistribution", "Can manage roles on tofu distributions"),
+        ]
+
+
+class TofuNamespace(BaseModel):
+    """A registry namespace: the owner of every provider and module published under it.
+
+    The registry answers ``<namespace>/...`` requests from ``distribution``'s repository.
+    ``content_hostname`` is the origin hostname of the content served; empty means
+    content published to this Pulp, whose origin is ``TOFU_REGISTRY_HOSTNAME``. A
+    ``private`` namespace answers only callers with ``view_tofunamespace`` on it.
+    """
+
+    name = models.TextField()
+    pulp_domain = models.ForeignKey("core.Domain", default=get_domain_pk, on_delete=models.PROTECT)
+    distribution = models.ForeignKey(
+        TofuDistribution, null=True, on_delete=models.SET_NULL, related_name="namespaces"
+    )
+    content_hostname = models.TextField(blank=True, default="")
+    private = models.BooleanField(default=False)
+
+    class Meta:
+        default_related_name = "%(app_label)s_%(model_name)s"
+        unique_together = ("name", "pulp_domain")
+        permissions = [
+            ("manage_roles_tofunamespace", "Can manage roles on tofu namespaces"),
+            ("publish_tofunamespace", "Can publish providers and modules to the namespace"),
         ]

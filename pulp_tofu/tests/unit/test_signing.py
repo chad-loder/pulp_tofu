@@ -27,7 +27,9 @@ def published() -> tuple[bytes, bytes, str]:
 
 def test_verifies_published_provider(published: tuple[bytes, bytes, str]) -> None:
     sums, sig, key = published
-    assert verify_sha256sums(sums, sig, [key]) == RANDOM_FINGERPRINT
+    signer = verify_sha256sums(sums, sig, [key])
+    assert signer.fingerprint == RANDOM_FINGERPRINT
+    assert signer.key_id == "0C0AF313E5FD9F80"
 
 
 def test_rejects_tampered_sums(published: tuple[bytes, bytes, str]) -> None:
@@ -39,7 +41,7 @@ def test_rejects_tampered_sums(published: tuple[bytes, bytes, str]) -> None:
 def test_names_the_key_that_signed(published: tuple[bytes, bytes, str]) -> None:
     sums, sig, key = published
     other = str(Tsk.generate("other@example.com").extract_certificate())
-    assert verify_sha256sums(sums, sig, [other, key]) == RANDOM_FINGERPRINT
+    assert verify_sha256sums(sums, sig, [other, key]).fingerprint == RANDOM_FINGERPRINT
 
 
 def test_rejects_wrong_key(published: tuple[bytes, bytes, str]) -> None:
@@ -60,7 +62,7 @@ def test_verifies_binary_detached_signature() -> None:
     cert = key.extract_certificate()
     document = b"%s  p.zip\n" % (b"a" * 64)
     signature = sign(key.signer(), document, mode=SignatureMode.DETACHED, armor=False)
-    assert verify_sha256sums(document, signature, [str(cert)]) == cert.fingerprint
+    assert verify_sha256sums(document, signature, [str(cert)]).fingerprint == cert.fingerprint
 
 
 def test_parse_published_sums(published: tuple[bytes, bytes, str]) -> None:
@@ -82,7 +84,7 @@ def test_trusted_fingerprints_exclude_other_offered_keys(
     with pytest.raises(SignatureError, match="trusted"):
         verify_sha256sums(sums, sig, [key], trusted=frozenset({other}))
     trusted = frozenset({Fingerprint(RANDOM_FINGERPRINT)})
-    assert verify_sha256sums(sums, sig, [key], trusted=trusted) == RANDOM_FINGERPRINT
+    assert verify_sha256sums(sums, sig, [key], trusted=trusted).fingerprint == RANDOM_FINGERPRINT
 
 
 def test_parse_rejects_malformed_line() -> None:

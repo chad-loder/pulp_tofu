@@ -12,7 +12,7 @@ from .hashes import Sha256Hex
 from .models import ArchiveRecord, ProviderVersion, TofuRemote
 from .protocol import Platform, PlatformKey, ProviderAddress
 from .registry import RegistryClient, UpstreamError, UpstreamVersion
-from .signing import Fingerprint, SignatureError, parse_sha256sums, verify_sha256sums
+from .signing import SignatureError, Signer, parse_sha256sums, verify_sha256sums
 
 log = logging.getLogger(__name__)
 
@@ -40,12 +40,12 @@ async def fetch_provider_version(
     shasums, signature = await asyncio.gather(
         client.fetch_bytes(info.shasums_url), client.fetch_bytes(info.shasums_signature_url)
     )
-    fingerprint: Fingerprint | None
+    signer: Signer | None
     trusted = remote.trusted_fingerprints
     if info.signing_keys or trusted:
-        fingerprint = verify_sha256sums(shasums, signature, info.signing_keys, trusted=trusted)
+        signer = verify_sha256sums(shasums, signature, info.signing_keys, trusted=trusted)
     elif address.hostname == KEYLESS_REGISTRY and not remote.require_signatures:
-        fingerprint = None
+        signer = None
     else:
         raise SignatureError(f"{address} {upstream.version} offers no signing keys")
     sums = parse_sha256sums(shasums)
@@ -93,8 +93,9 @@ async def fetch_provider_version(
         protocols=list(upstream.protocols),
         shasums=shasums,
         shasums_signature=signature,
-        # The column stores no fingerprint for a provider accepted unsigned.
-        signing_key_fingerprint=fingerprint or "",
+        # The columns store no key for a provider accepted unsigned.
+        signing_key_fingerprint=signer.fingerprint if signer else "",
+        signing_key=signer.public_key if signer else "",
         archives=archives,
         _pulp_domain=get_domain(),
     )
