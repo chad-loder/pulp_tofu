@@ -15,7 +15,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from .protocol import Platform, protocols_supported
+from .protocol import Platform, is_provider_type, protocols_supported
 
 # Provider types and versions become path segments, so both are kept to plain names.
 _RELEASE_FILE = re.compile(
@@ -72,6 +72,8 @@ def parse_release(filenames: list[str]) -> ReleaseFiles:
     if len(releases) != 1:
         raise ReleaseError("the files name more than one provider type or version")
     [(provider_type, version)] = releases
+    if not is_provider_type(provider_type):
+        raise ReleaseError(f"OpenTofu does not accept the provider type {provider_type!r}")
     if "SHA256SUMS" not in singles or "SHA256SUMS.sig" not in singles:
         raise ReleaseError("a release needs its SHA256SUMS and SHA256SUMS.sig")
     if not archives:

@@ -4,11 +4,48 @@ from pulp_tofu.app.protocol import (
     Platform,
     ProviderAddress,
     address_allowed,
+    is_provider_part,
+    is_provider_type,
     latest_releases,
+    normalize_hostname,
     protocols_supported,
 )
 
 AWS = ProviderAddress(hostname="registry.opentofu.org", namespace="hashicorp", type="aws")
+
+
+@pytest.mark.parametrize(
+    ("value", "part", "type_"),
+    [
+        ("hashicorp", True, True),
+        ("google-beta", True, True),
+        ("a" * 63, True, True),
+        ("a" * 64, False, False),
+        ("terraform-aws", True, False),
+        ("opentofu-aws", True, False),
+        ("-aws", False, False),
+        ("aws-", False, False),
+        ("a--b", False, False),
+        ("Aws", False, False),
+        ("a.b", False, False),
+        ("", False, False),
+    ],
+)
+def test_provider_parts_follow_opentofu_address_rules(value: str, part: bool, type_: bool) -> None:
+    assert (is_provider_part(value), is_provider_type(value)) == (part, type_)
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("Pulp.Example", "pulp.example"),
+        ("pulp.example:443", "pulp.example"),
+        ("pulp.example:8443", "pulp.example:8443"),
+        ("pulp.example.", "pulp.example"),
+    ],
+)
+def test_hostnames_compare_as_opentofu_compares_them(given: str, expected: str) -> None:
+    assert normalize_hostname(given) == expected
 
 
 @pytest.mark.parametrize(

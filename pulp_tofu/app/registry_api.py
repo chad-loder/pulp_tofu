@@ -31,13 +31,19 @@ from .models import (
     TofuNamespace,
     TofuToken,
 )
-from .protocol import Platform
+from .protocol import Platform, normalize_hostname
 
 if TYPE_CHECKING:
     from django.contrib.auth.models import AbstractUser, AnonymousUser
 
 PROVIDERS_SERVICE = "providers.v1"
 CHECKSUMS_SEGMENT = "_checksums"
+
+
+def registry_hostname() -> str | None:
+    """``TOFU_REGISTRY_HOSTNAME`` as OpenTofu compares hostnames, or None if unset."""
+    hostname = settings.TOFU_REGISTRY_HOSTNAME
+    return normalize_hostname(hostname) if isinstance(hostname, str) and hostname else None
 
 
 def providers_url() -> URL:
@@ -97,7 +103,7 @@ class _RegistryView(APIView):
         _, repository_version, _ = distribution.get_repository_publication_and_version()
         if repository_version is None:
             return ProviderVersion.objects.none()
-        hostname = served.namespace.content_hostname or settings.TOFU_REGISTRY_HOSTNAME
+        hostname = served.namespace.content_hostname or registry_hostname()
         return ProviderVersion.objects.filter(
             pk__in=repository_version.content,
             hostname=hostname,

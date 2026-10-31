@@ -59,6 +59,33 @@ class Platform:
         return self.key
 
 
+# A provider namespace or type as OpenTofu's registry-address (ParseProviderPart)
+# accepts one, kept to ASCII: letters, digits and single dashes, no dash at either end,
+# at most one DNS label long.
+_PROVIDER_PART = re.compile(r"^(?=.{1,63}$)[a-z0-9]+(?:-[a-z0-9]+)*$")
+# OpenTofu refuses provider types with these prefixes.
+_REDUNDANT_TYPE_PREFIXES = ("terraform-", "opentofu-")
+
+
+def is_provider_part(value: str) -> bool:
+    """Whether ``value`` is a provider namespace OpenTofu accepts, already lowercase."""
+    return _PROVIDER_PART.match(value) is not None
+
+
+def is_provider_type(value: str) -> bool:
+    """Whether ``value`` is a provider type OpenTofu accepts, already lowercase."""
+    return is_provider_part(value) and not value.startswith(_REDUNDANT_TYPE_PREFIXES)
+
+
+def normalize_hostname(value: str) -> str:
+    """A registry hostname as OpenTofu compares hostnames: lowercase, without ``:443``.
+
+    OpenTofu's svchost also maps internationalized names to Unicode; this does not.
+    """
+    host = value.strip().lower().rstrip(".")
+    return host.removesuffix(":443")
+
+
 def parse_platform_key(key: str) -> Platform | None:
     """The platform an ``os_arch`` key names, or None if it is not one."""
     return Platform.from_key(key)

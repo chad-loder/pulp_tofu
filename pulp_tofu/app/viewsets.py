@@ -4,7 +4,6 @@ import base64
 from gettext import gettext as _
 from typing import override
 
-from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.core.files.uploadedfile import UploadedFile
 from django.db import IntegrityError
@@ -25,6 +24,7 @@ from pulpcore.plugin.util import get_domain
 
 from . import models, serializers, tasks
 from .authentication import registry_authentication_classes
+from .registry_api import registry_hostname
 
 
 def _object_policy(model: str, *, create: list[str], update: list[str]) -> list[dict[str, object]]:
@@ -433,8 +433,8 @@ def _upload_target(namespace: models.TofuNamespace) -> tuple[str, models.TofuRep
         ValidationError: The registry has no hostname, or the namespace's distribution
             does not accept uploads.
     """
-    hostname = settings.TOFU_REGISTRY_HOSTNAME
-    if not isinstance(hostname, str) or not hostname:
+    hostname = registry_hostname()
+    if hostname is None:
         raise ValidationError(_("Set TOFU_REGISTRY_HOSTNAME to publish providers."))
     if namespace.content_hostname:
         raise ValidationError(

@@ -39,6 +39,9 @@ def test_release_files_are_sorted_by_role() -> None:
         [*RELEASE, f"{PREFIX}_linux_amd64.tar.gz"],
         [*RELEASE, "../terraform-provider-widget_1.2.0_linux_arm64.zip"],
         [*RELEASE, f"{PREFIX}_Linux_amd64.zip"],
+        [n.replace("widget", "terraform-widget") for n in RELEASE],
+        [n.replace("widget", "widget-") for n in RELEASE],
+        [n.replace("widget", "wid--get") for n in RELEASE],
     ],
     ids=[
         "no sums",
@@ -50,6 +53,9 @@ def test_release_files_are_sorted_by_role() -> None:
         "not a zip",
         "path",
         "uppercase platform",
+        "redundant type prefix",
+        "trailing dash",
+        "double dash",
     ],
 )
 def test_incomplete_or_mixed_releases_are_refused(files: list[str]) -> None:

@@ -13,7 +13,7 @@ from pulpcore.plugin.models import Remote
 
 from . import models
 from .authentication import IssuedToken, issue_token
-from .protocol import Platform
+from .protocol import Platform, is_provider_part, normalize_hostname
 from .publishing import MAX_SMALL_FILE_BYTES, ReleaseError, ReleaseFiles, parse_release
 from .signing import parse_fingerprint
 
@@ -285,11 +285,11 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
     """A registry namespace and the distribution that serves it."""
 
     pulp_href = platform.IdentityField(view_name="pulp_tofu/namespaces-detail")
-    name = serializers.RegexField(
-        r"^[a-z0-9][a-z0-9-]*$",
-        max_length=64,
+    name = serializers.CharField(
+        max_length=63,
         help_text=_(
-            "The namespace in provider source addresses, e.g. acme in pulp.example/acme/widget."
+            "The namespace in provider source addresses, e.g. acme in pulp.example/acme/widget: "
+            "lowercase letters, digits and single dashes, no dash at either end."
         ),
     )
     distribution = platform.DetailRelatedField(
@@ -321,6 +321,16 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
         queryset=apps.get_model("core", "OpenPGPKeyring").objects.all(),
         help_text=_("The OpenPGP keyring holding the keys that sign the namespace's releases."),
     )
+
+    def validate_name(self, name: str) -> str:
+        """Accept only namespaces OpenTofu accepts in a source address."""
+        if not is_provider_part(name):
+            raise serializers.ValidationError(_("OpenTofu does not accept this namespace."))
+        return name
+
+    def validate_content_hostname(self, hostname: str) -> str:
+        """Store the hostname as OpenTofu compares it."""
+        return normalize_hostname(hostname)
 
     def validate_keyring(self, keyring: object) -> object:
         """Refuse a keyring the caller cannot see."""
