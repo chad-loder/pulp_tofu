@@ -406,9 +406,7 @@ class RegistryClient:
         return parse_module_location(status, headers, body), url
 
     async def _module_url(self, *segments: str) -> URL:
-        if not all(_is_segment(segment) for segment in segments):
-            raise UpstreamNotFound("/".join(segments))
-        return (await self._service_url(MODULES_SERVICE)).joinpath(*segments)
+        return await self._service_path(MODULES_SERVICE, *segments)
 
     async def versions(self, address: ProviderAddress) -> list[UpstreamVersion]:
         url = await self._provider_url(address.namespace, address.type, "versions")
@@ -424,10 +422,13 @@ class RegistryClient:
         return parse_download(await self.fetch_json(url), url)
 
     async def _provider_url(self, *segments: str) -> URL:
+        return await self._service_path(PROVIDERS_SERVICE, *segments)
+
+    async def _service_path(self, service: str, *segments: str) -> URL:
         # joinpath resolves "." and ".." and splits on "/", so each value must be one segment.
         if not all(_is_segment(segment) for segment in segments):
             raise UpstreamNotFound("/".join(segments))
-        return (await self.providers_url()).joinpath(*segments)
+        return (await self._service_url(service)).joinpath(*segments)
 
     async def fetch_json(self, url: URL, *, max_bytes: int = MAX_METADATA_BYTES) -> object:
         body = await self.fetch_bytes(url, max_bytes=max_bytes)

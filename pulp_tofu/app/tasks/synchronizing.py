@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict, Unpack, assert_never, override
+from typing import TypedDict, Unpack, assert_never, cast, override
 from uuid import uuid4
 
 from yarl import URL
@@ -119,14 +119,22 @@ def _selection(raw: object) -> ProviderSelection:
     if not isinstance(raw, dict):
         raise SyncError("a provider selection is not an object")
     namespace, provider_type = raw.get("namespace"), raw.get("type")
-    versions, latest = raw.get("versions", []), raw.get("latest", 1)
     if not (isinstance(namespace, str) and isinstance(provider_type, str)):
         raise SyncError("a provider selection lacks namespace or type")
-    if not (isinstance(versions, list) and all(isinstance(v, str) for v in versions)):
-        raise SyncError(f"{namespace}/{provider_type}: versions must be strings")
-    if not isinstance(latest, int) or isinstance(latest, bool) or latest < 1:
-        raise SyncError(f"{namespace}/{provider_type}: latest must be a positive integer")
+    versions, latest = _releases(raw, f"{namespace}/{provider_type}")
     return {"namespace": namespace, "type": provider_type, "versions": versions, "latest": latest}
+
+
+def _releases(raw: dict[str, object], label: str) -> tuple[list[str], int]:
+    """A selection's ``versions`` and ``latest``, checked."""
+    versions, latest = raw.get("versions", []), raw.get("latest", 1)
+    if not isinstance(versions, list) or not all(
+        isinstance(v, str) for v in cast("list[object]", versions)
+    ):
+        raise SyncError(f"{label}: versions must be strings")
+    if not isinstance(latest, int) or isinstance(latest, bool) or latest < 1:
+        raise SyncError(f"{label}: latest must be a positive integer")
+    return [str(v) for v in cast("list[object]", versions)], latest
 
 
 def _module_selection(raw: object) -> ModuleSelection:
@@ -134,14 +142,9 @@ def _module_selection(raw: object) -> ModuleSelection:
     if not isinstance(raw, dict):
         raise SyncError("a module selection is not an object")
     namespace, name, system = raw.get("namespace"), raw.get("name"), raw.get("system")
-    versions, latest = raw.get("versions", []), raw.get("latest", 1)
     if not (isinstance(namespace, str) and isinstance(name, str) and isinstance(system, str)):
         raise SyncError("a module selection lacks namespace, name or system")
-    label = f"{namespace}/{name}/{system}"
-    if not (isinstance(versions, list) and all(isinstance(v, str) for v in versions)):
-        raise SyncError(f"{label}: versions must be strings")
-    if not isinstance(latest, int) or isinstance(latest, bool) or latest < 1:
-        raise SyncError(f"{label}: latest must be a positive integer")
+    versions, latest = _releases(raw, f"{namespace}/{name}/{system}")
     return {
         "namespace": namespace,
         "name": name,

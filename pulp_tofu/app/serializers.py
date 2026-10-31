@@ -277,11 +277,9 @@ class TofuRepositorySerializer(platform.RepositorySerializer):
         model = models.TofuRepository
 
 
-class ProviderSelectionSerializer(serializers.Serializer[dict[str, object]]):
-    """One provider for a sync to fetch from the remote's registry."""
+class _ReleaseSelectionFields(serializers.Serializer[dict[str, object]]):
+    """Which releases of one provider or module a sync fetches."""
 
-    namespace = serializers.CharField(help_text=_("Provider namespace, e.g. hashicorp."))
-    type = serializers.CharField(help_text=_("Provider type, e.g. aws."))
     versions = serializers.ListField(
         child=serializers.CharField(),
         required=False,
@@ -297,25 +295,19 @@ class ProviderSelectionSerializer(serializers.Serializer[dict[str, object]]):
     )
 
 
-class ModuleSelectionSerializer(serializers.Serializer[dict[str, object]]):
+class ProviderSelectionSerializer(_ReleaseSelectionFields):
+    """One provider for a sync to fetch from the remote's registry."""
+
+    namespace = serializers.CharField(help_text=_("Provider namespace, e.g. hashicorp."))
+    type = serializers.CharField(help_text=_("Provider type, e.g. aws."))
+
+
+class ModuleSelectionSerializer(_ReleaseSelectionFields):
     """One module for a sync to fetch from the remote's registry."""
 
     namespace = serializers.CharField(help_text=_("Module namespace, e.g. cloudposse."))
     name = serializers.CharField(help_text=_("Module name, e.g. label."))
     system = serializers.CharField(help_text=_("Target system, e.g. null."))
-    versions = serializers.ListField(
-        child=serializers.CharField(),
-        required=False,
-        default=list,
-        help_text=_("Exact versions to fetch; empty fetches the latest releases."),
-    )
-    latest = serializers.IntegerField(
-        min_value=1,
-        max_value=100,
-        required=False,
-        default=1,
-        help_text=_("How many of the newest releases to fetch when versions is empty."),
-    )
 
 
 class TofuSyncSerializer(platform.RepositorySyncURLSerializer):
