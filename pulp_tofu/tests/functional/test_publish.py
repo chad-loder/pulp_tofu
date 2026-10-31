@@ -56,10 +56,10 @@ class Publisher:
             )
         return self.monitor_task(response.task)
 
-    def publish_module(self, version: str, package: bytes) -> Any:  # noqa: ANN401
+    def publish_module(self, version: str, package: bytes, name: str = "vpc") -> Any:  # noqa: ANN401
         response = self.bindings.PulpTofuNamespacesApi.publish_module(
             self.namespace.pulp_href,
-            name="vpc",
+            name=name,
             system="aws",
             version=version,
             file=("vpc.tar.gz", package),
@@ -148,6 +148,8 @@ def test_published_release_is_served_by_the_registry(
     assert fetch(URL(document["download_url"]).path).body == archive
     hashes = document["packages"]["linux_amd64"]["hashes"]
     assert any(h.startswith("h1:") for h in hashes)
+    mixed = f"{REGISTRY}/{publisher.namespace.name.upper()}/{provider_type.title()}/versions"
+    assert json.loads(fetch(mixed).body)["versions"] == versions
 
     # Publishing the same release again changes nothing.
     publisher.publish(_files(provider_type, "1.0.0", release))
@@ -219,6 +221,47 @@ def test_release_job_publishes_with_a_publish_token(
     assert fetch(f"{base}/versions").status == 200
 
 
+def test_a_token_publishes_only_what_its_user_may(
+    publisher: Publisher,
+    release: Release,
+    provider_type: str,
+    tofu_bindings: Any,
+    gen_user: Callable[..., Any],
+) -> None:
+    reader = gen_user(object_roles=[("tofu.tofunamespace_consumer", publisher.namespace.pulp_href)])
+    body = {"name": "ci", "scope": "publish", "namespaces": [publisher.namespace.pulp_href]}
+    with reader:
+        token = tofu_bindings.PulpTofuTokensApi.create(body)
+    with pytest.raises(ApiException) as error:
+        publisher.publish(_files(provider_type, "1.0.0", release), token=str(token.token))
+    assert error.value.status == 403
+
+
+def test_update_token_publishes_only_versions_of_existing_providers(
+    publisher: Publisher,
+    registry: FakeRegistry,
+    release: Release,
+    provider_type: str,
+    tofu_bindings: Any,
+    gen_object_with_cleanup: Callable[..., Any],
+) -> None:
+    body = {"name": "ci", "scope": "update", "namespaces": [publisher.namespace.pulp_href]}
+    update = str(gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token)
+    first = _files(provider_type, "1.0.0", release)
+    with pytest.raises(ApiException) as error:
+        publisher.publish(first, token=update)
+    assert error.value.status == 403
+
+    publisher.publish(first)
+    later = registry.release(provider_type, "1.1.0")
+    assert later is not None
+    publisher.publish(_files(provider_type, "1.1.0", later), token=update)
+    versions = json.loads(
+        fetch(f"{REGISTRY}/{publisher.namespace.name}/{provider_type}/versions").body
+    )
+    assert {v["version"] for v in versions["versions"]} == {"1.0.0", "1.1.0"}
+
+
 MODULES = "/tofu/v1/modules"
 
 
@@ -241,6 +284,21 @@ def test_a_published_module_version_cannot_change(publisher: Publisher) -> None:
     with pytest.raises(ApiException) as error:
         publisher.publish_module("1.0.0", _module_package(("main.tf", b"# two\n")))
     assert error.value.status == 409
+
+
+def test_module_names_ignore_case(publisher: Publisher) -> None:
+    publisher.publish_module("1.0.0", _module_package(("main.tf", b"# vpc\n")), name="Vpc")
+
+    namespace = publisher.namespace.name
+    for path in (f"{namespace}/Vpc/aws", f"{namespace.upper()}/vpc/AWS"):
+        listing = json.loads(fetch(f"{MODULES}/{path}/versions").body)
+        assert listing == {"modules": [{"versions": [{"version": "1.0.0"}]}]}
+    with pytest.raises(ApiException) as error:
+        publisher.publish_module(
+            "1.1.0", _module_package(("main.tf", b"# lookalike\n")), name="vpc"
+        )
+    assert error.value.status == 409
+    assert "differs only in case" in str(error.value.body)
 
 
 def test_module_package_escaping_its_directory_is_refused(publisher: Publisher) -> None:

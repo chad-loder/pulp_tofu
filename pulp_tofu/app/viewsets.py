@@ -394,6 +394,16 @@ class TofuNamespaceViewSet(
             raise ReleaseConflict(
                 f"{namespace.name}/{release.provider_type} {release.version} is already published"
             )
+        self._require_publish_scope_for_new_name(
+            request,
+            _serves(
+                repository,
+                models.ProviderVersion,
+                hostname=hostname,
+                namespace=namespace.name,
+                provider_type=release.provider_type,
+            ),
+        )
 
         def encoded(data: bytes | None) -> str | None:
             return base64.b64encode(data).decode() if data is not None else None
@@ -450,6 +460,24 @@ class TofuNamespaceViewSet(
                 f"{namespace.name}/{upload.name}/{upload.system} {upload.version} "
                 "is already published"
             )
+        taken = tasks.module_case_variant(
+            repository, hostname, namespace.name, upload.name, upload.system
+        )
+        if taken is not None:
+            raise ReleaseConflict(
+                tasks.case_variant_message(namespace.name, upload.name, taken, upload.system)
+            )
+        self._require_publish_scope_for_new_name(
+            request,
+            _serves(
+                repository,
+                models.ModuleVersion,
+                hostname=hostname,
+                namespace=namespace.name,
+                name=upload.name,
+                system=upload.system,
+            ),
+        )
         kwargs: tasks.PublishModuleKwargs = {
             "namespace_pk": str(namespace.pk),
             "hostname": hostname,
@@ -479,10 +507,23 @@ class TofuNamespaceViewSet(
         if not isinstance(namespace, models.TofuNamespace):
             raise TypeError(f"expected a TofuNamespace, got {type(namespace)}")
         token = request.auth
-        if isinstance(token, models.TofuToken) and not token.allows(namespace, "publish"):
+        if isinstance(token, models.TofuToken) and not token.allows(namespace, "update"):
             raise PermissionDenied(_("The token does not publish to this namespace."))
         hostname, repository = _upload_target(namespace)
         return namespace, hostname, repository
+
+    @staticmethod
+    def _require_publish_scope_for_new_name(request: Request, serves_name: bool) -> None:
+        """Refuse an ``update`` token a name the namespace does not serve yet.
+
+        Raises:
+            PermissionDenied: The token may only add versions to existing names.
+        """
+        token = request.auth
+        if isinstance(token, models.TofuToken) and token.scope == "update" and not serves_name:
+            raise PermissionDenied(
+                _("The token publishes only new versions of providers and modules already here.")
+            )
 
 
 class TofuTokenViewSet(
@@ -524,6 +565,16 @@ class ReleaseConflict(APIException):
     status_code = 409
     default_detail = "The provider version is already published."
     default_code = "conflict"
+
+
+def _serves(
+    repository: models.TofuRepository,
+    model: type[models.ProviderVersion] | type[models.ModuleVersion],
+    **fields: str,
+) -> bool:
+    """Whether the repository's latest version holds any ``model`` content with ``fields``."""
+    latest = repository.latest_version()
+    return latest is not None and model.objects.filter(pk__in=latest.content, **fields).exists()
 
 
 def _upload_target(namespace: models.TofuNamespace) -> tuple[str, models.TofuRepository]:

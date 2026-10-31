@@ -1,0 +1,1 @@
+Registry lookups now ignore the case of namespaces, provider types, module names and target systems, as registry.opentofu.org's do, and a module published under a name that differs from an existing one only in case is refused.

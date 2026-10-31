@@ -109,6 +109,7 @@ module = [
   "pulp_tofu.app.downloaders",
   "pulp_tofu.app.mirror",
   "pulp_tofu.app.models",
+  "pulp_tofu.app.permissions",
   "pulp_tofu.app.registry",
   "pulp_tofu.app.registry_api",
   "pulp_tofu.app.serializers",

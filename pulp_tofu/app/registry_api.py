@@ -4,6 +4,10 @@ https://opentofu.org/docs/internals/provider-registry-protocol/. One registry pe
 host: discovery at the host root names it, and each request's namespace selects the
 ``TofuNamespace`` whose distribution answers. Answers are built per request from that
 distribution's repository version; archive and checksum URLs point at the content app.
+
+Names in request paths ignore case, as registry.opentofu.org's do: OpenTofu lowercases
+provider addresses but sends module addresses as written. Namespaces, provider types and
+module systems are stored lowercase; module names keep the case they were published in.
 """
 
 from dataclasses import dataclass
@@ -32,6 +36,7 @@ from .models import (
     TofuNamespace,
     TofuToken,
 )
+from .permissions import has_any_level_perm
 from .protocol import Platform, normalize_hostname
 
 if TYPE_CHECKING:
@@ -82,7 +87,7 @@ class _RegistryView(APIView):
             return _errors(404, "Not Found")
         namespace = (
             TofuNamespace.objects.select_related("distribution__content_guard")
-            .filter(name=name, pulp_domain=get_domain())
+            .filter(name=name.lower(), pulp_domain=get_domain())
             .first()
         )
         if namespace is None or namespace.distribution is None:
@@ -92,7 +97,7 @@ class _RegistryView(APIView):
             token = request.auth if isinstance(request.auth, TofuToken) else None
             if not user.is_authenticated:
                 return _errors(401, "Unauthorized")
-            if not user.has_perm("tofu.view_tofunamespace", namespace) or (
+            if not has_any_level_perm(user, "tofu.view_tofunamespace", namespace) or (
                 token is not None and not token.allows(namespace, "read")
             ):
                 return _errors(403, "Forbidden")
@@ -109,7 +114,7 @@ class _RegistryView(APIView):
             pk__in=repository_version.content,
             hostname=hostname,
             namespace=served.namespace.name,
-            provider_type=provider_type,
+            provider_type=provider_type.lower(),
         )
 
     @staticmethod
@@ -121,8 +126,8 @@ class _RegistryView(APIView):
             pk__in=repository_version.content,
             hostname=served.namespace.content_hostname or registry_hostname(),
             namespace=served.namespace.name,
-            name=name,
-            system=system,
+            name__iexact=name,
+            system=system.lower(),
         )
 
 

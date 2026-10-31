@@ -96,6 +96,23 @@ def test_private_namespace_requires_a_reader(
     assert fetch(path, admin).status == 200
 
 
+def test_private_namespace_reads_follow_roles_at_every_level(
+    mirror: Mirror, served: Callable[..., Any], gen_user: Callable[..., Any]
+) -> None:
+    namespace = served(private=True)
+    path = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}/versions"
+
+    def basic(user: Any) -> dict[str, str]:  # noqa: ANN401
+        login = f"{user.username}:{user.password}".encode()
+        return {"Authorization": "Basic " + base64.b64encode(login).decode()}
+
+    everywhere = gen_user(model_roles=["tofu.tofunamespace_consumer"])
+    here = gen_user(object_roles=[("tofu.tofunamespace_consumer", namespace.pulp_href)])
+    assert fetch(path, basic(everywhere)).status == 200
+    assert fetch(path, basic(here)).status == 200
+    assert fetch(path, basic(gen_user())).status == 403
+
+
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 

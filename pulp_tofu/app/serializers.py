@@ -8,6 +8,7 @@ from typing import cast, override
 
 from django.apps import apps
 from django.core.files.uploadedfile import UploadedFile
+from django.db.models import Model
 from rest_framework import serializers
 from yarl import URL
 
@@ -17,6 +18,7 @@ from pulpcore.plugin.util import get_domain
 
 from . import models
 from .authentication import IssuedToken, issue_token
+from .permissions import has_any_level_perm
 from .protocol import (
     Platform,
     is_module_name,
@@ -482,11 +484,8 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
         """Refuse a keyring the caller cannot see."""
         user = getattr(self.context.get("request"), "user", None)
         allowed = keyring is None or (
-            user is not None
-            and (
-                user.has_perm("core.view_openpgpkeyring")
-                or user.has_perm("core.view_openpgpkeyring", keyring)
-            )
+            isinstance(keyring, Model)
+            and has_any_level_perm(user, "core.view_openpgpkeyring", keyring)
         )
         if not allowed:
             raise serializers.ValidationError(_("Unknown keyring."))
@@ -498,12 +497,8 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
         """Refuse a distribution the caller cannot see; the namespace would expose it."""
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        allowed = distribution is None or (
-            user is not None
-            and (
-                user.has_perm("tofu.view_tofudistribution")
-                or user.has_perm("tofu.view_tofudistribution", distribution)
-            )
+        allowed = distribution is None or has_any_level_perm(
+            user, "tofu.view_tofudistribution", distribution
         )
         if not allowed:
             raise serializers.ValidationError(_("Unknown distribution."))
@@ -527,9 +522,12 @@ class TofuTokenSerializer(platform.ModelSerializer):
     pulp_href = platform.IdentityField(view_name="pulp_tofu/tokens-detail")
     name = serializers.CharField(max_length=128, help_text=_("A label for the token."))
     scope = serializers.ChoiceField(
-        choices=["read", "publish"],
+        choices=list(models.TOKEN_SCOPES),
         default="read",
-        help_text=_("read reads the namespaces; publish also publishes to them."),
+        help_text=_(
+            "read reads the namespaces; update also publishes new versions of the providers "
+            "and modules they serve; publish also publishes new providers and modules."
+        ),
     )
     namespaces = platform.RelatedField(
         many=True,
@@ -558,10 +556,7 @@ class TofuTokenSerializer(platform.ModelSerializer):
         if not namespaces:
             raise serializers.ValidationError(_("Name at least one namespace."))
         for namespace in namespaces:
-            if user is None or not (
-                user.has_perm("tofu.view_tofunamespace")
-                or user.has_perm("tofu.view_tofunamespace", namespace)
-            ):
+            if not has_any_level_perm(user, "tofu.view_tofunamespace", namespace):
                 raise serializers.ValidationError(_("Unknown namespace."))
         return namespaces
 
@@ -634,7 +629,7 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
         )
         artifact.bind("artifacts", self)
         return {
-            str(name): cast("Artifact", artifact.to_internal_value(href))
+            str(name): cast("Artifact", artifact.to_internal_value(str(href)))
             for name, href in cast("dict[object, object]", value).items()
         }
 

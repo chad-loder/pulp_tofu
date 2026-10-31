@@ -13,6 +13,7 @@ from django.db import models
 from yarl import URL
 
 from pulpcore.plugin.models import (
+    AutoAddObjPermsMixin,
     BaseModel,
     Content,
     Distribution,
@@ -212,7 +213,7 @@ class ModuleVersion(Content):
         )
 
 
-class TofuRemote(Remote):
+class TofuRemote(Remote, AutoAddObjPermsMixin):
     """An upstream OpenTofu provider registry.
 
     ``url`` is the registry's root, where service discovery starts. Downloads follow
@@ -220,7 +221,7 @@ class TofuRemote(Remote):
     stores archives.
     """
 
-    TYPE = "tofu"
+    TYPE = "tofu"  # type: ignore[assignment]
 
     includes = models.JSONField(default=list)
     excludes = models.JSONField(default=list)
@@ -309,10 +310,10 @@ class ProviderIndex(BaseModel):
         unique_together = ("remote", "hostname", "namespace", "provider_type")
 
 
-class TofuRepository(Repository):
+class TofuRepository(Repository, AutoAddObjPermsMixin):
     """A repository of provider versions and the archives pulled through for them."""
 
-    TYPE = "tofu"
+    TYPE = "tofu"  # type: ignore[assignment]
     CONTENT_TYPES = [ProviderVersion, ProviderPackage, ModuleVersion]
     REMOTE_TYPES = [TofuRemote]
     PULL_THROUGH_SUPPORTED = True
@@ -366,7 +367,7 @@ class TofuRepository(Repository):
         ]
 
 
-class TofuDistribution(Distribution):
+class TofuDistribution(Distribution, AutoAddObjPermsMixin):
     """Serves the provider network mirror protocol below ``/pulp/tofu/<base_path>/``."""
 
     TYPE = "tofu"  # type: ignore[assignment]
@@ -452,7 +453,7 @@ class TofuSigningService(SigningService):
         default_related_name = "%(app_label)s_%(model_name)s"
 
 
-class TofuNamespace(BaseModel):
+class TofuNamespace(BaseModel, AutoAddObjPermsMixin):
     """A registry namespace: the owner of every provider and module published under it.
 
     The registry answers ``<namespace>/...`` requests from ``distribution``'s repository.
@@ -498,16 +499,19 @@ class TofuNamespace(BaseModel):
         ]
 
 
-TokenScope = Literal["read", "publish"]
+TokenScope = Literal["read", "update", "publish"]
+# Each scope covers the ones before it.
+TOKEN_SCOPES: tuple[TokenScope, ...] = ("read", "update", "publish")
 
 
 class TofuToken(BaseModel):
     """A user's bearer token for the registry, as OpenTofu sends ``TF_TOKEN_<host>``.
 
     The token acts as its user, narrowed to ``namespaces`` and to ``scope``: ``read``
-    reads them, ``publish`` also publishes to them. Only a SHA-256 digest of the secret
-    is stored; the secret is high-entropy, so a slow hash adds nothing. ``prefix`` is
-    public and finds the row.
+    reads them, ``update`` also publishes new versions of providers and modules they
+    already serve, ``publish`` also publishes new names. Only a SHA-256 digest of the
+    secret is stored; the secret is high-entropy, so a slow hash adds nothing.
+    ``prefix`` is public and finds the row.
     """
 
     user = models.ForeignKey(
@@ -516,14 +520,15 @@ class TofuToken(BaseModel):
     name = models.TextField()
     prefix = models.CharField(max_length=16, unique=True)
     digest = models.CharField(max_length=64)
-    scope = models.TextField(choices=[("read", "read"), ("publish", "publish")])
+    scope = models.TextField(choices=[(s, s) for s in TOKEN_SCOPES])
     namespaces = models.ManyToManyField(TofuNamespace, related_name="tokens")
     expires_at = models.DateTimeField(null=True)
     last_used_at = models.DateTimeField(null=True)
 
     def allows(self, namespace: TofuNamespace, scope: TokenScope) -> bool:
         """Whether the token covers ``scope`` on ``namespace``."""
-        if scope == "publish" and self.scope != "publish":
+        held = TOKEN_SCOPES.index(self.scope) if self.scope in TOKEN_SCOPES else -1
+        if held < TOKEN_SCOPES.index(scope):
             return False
         return self.namespaces.filter(pk=namespace.pk).exists()
 

@@ -171,9 +171,11 @@ def publish_module(**args: Unpack[PublishModuleKwargs]) -> None:
 
     Raises:
         ReleaseError: The package is not a safe ``.tar.gz`` of a module directory.
-        ReleaseConflictError: The version exists with a different package.
+        ReleaseConflictError: The version exists with a different package, or the
+            repository holds the module under a name that differs only in case.
     """
     namespace, repository = _target(args["namespace_pk"])
+    _refuse_case_variant(namespace, repository, args)
     artifact = Artifact.objects.get(pk=args["artifact_pk"])
     with artifact.file.open("rb") as archive:
         check_module_archive(archive)
@@ -203,6 +205,51 @@ def publish_module(**args: Unpack[PublishModuleKwargs]) -> None:
         )
     with repository.new_version() as new_version:
         new_version.add_content(ModuleVersion.objects.filter(pk=module.pk))
+
+
+def module_case_variant(
+    repository: TofuRepository, hostname: str, namespace: str, name: str, system: str
+) -> str | None:
+    """The name the repository serves this module under when it differs only in case.
+
+    The registry matches module names ignoring case, so both names would answer the
+    same source address.
+    """
+    latest = repository.latest_version()
+    if latest is None:
+        return None
+    return (
+        ModuleVersion.objects.filter(
+            pk__in=latest.content,
+            hostname=hostname,
+            namespace=namespace,
+            name__iexact=name,
+            system=system,
+        )
+        .exclude(name=name)
+        .values_list("name", flat=True)
+        .first()
+    )
+
+
+def _refuse_case_variant(
+    namespace: TofuNamespace, repository: TofuRepository, args: PublishModuleKwargs
+) -> None:
+    taken = module_case_variant(
+        repository, args["hostname"], namespace.name, args["name"], args["system"]
+    )
+    if taken is not None:
+        raise ReleaseConflictError(
+            case_variant_message(namespace.name, args["name"], taken, args["system"])
+        )
+
+
+def case_variant_message(namespace: str, name: str, taken: str, system: str) -> str:
+    """Why a module name was refused for differing from ``taken`` only in case."""
+    return (
+        f"{namespace}/{name}/{system} differs only in case from the published "
+        f"{namespace}/{taken}/{system}"
+    )
 
 
 class _ModuleKey(TypedDict):

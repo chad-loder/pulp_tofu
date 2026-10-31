@@ -97,7 +97,7 @@ class Migration(migrations.Migration):
                 ('name', models.TextField()),
                 ('prefix', models.CharField(max_length=16, unique=True)),
                 ('digest', models.CharField(max_length=64)),
-                ('scope', models.TextField(choices=[('read', 'read'), ('publish', 'publish')])),
+                ('scope', models.TextField(choices=[('read', 'read'), ('update', 'update'), ('publish', 'publish')])),
                 ('expires_at', models.DateTimeField(null=True)),
                 ('last_used_at', models.DateTimeField(null=True)),
                 ('namespaces', models.ManyToManyField(related_name='tokens', to='tofu.tofunamespace')),
