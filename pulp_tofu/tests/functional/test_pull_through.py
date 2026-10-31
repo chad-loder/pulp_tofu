@@ -55,9 +55,7 @@ def test_pull_through_then_serve_from_pulp(mirror: Mirror) -> None:
         time.sleep(0.5)
     assert h1 in hashes
 
-    version = mirror.pulp.api("GET", mirror.repository)["latest_version_href"]
-    summary = mirror.pulp.api("GET", str(version))["content_summary"]
-    assert {k: v["count"] for k, v in summary["present"].items()} == {
+    assert mirror.present_content() == {
         "tofu.provider_package": 1,
         "tofu.provider_version": 1,
     }
@@ -110,7 +108,7 @@ def test_corrupt_archive_is_never_stored(mirror: Mirror) -> None:
     mirror.registry.state.corrupt_archive = True
     corrupt = mirror.get(f"1.0.0/{name}")
     assert not (corrupt.complete and corrupt.status == 200 and corrupt.body != data)
-    assert all(p["artifact"] is None for p in mirror.packages())
+    assert all(p.artifact is None for p in mirror.packages())
 
     mirror.registry.state.corrupt_archive = False
     clean = mirror.get(f"1.0.0/{name}")
@@ -136,5 +134,5 @@ def test_upstream_cut_without_validator_ends_the_stream(mirror: Mirror) -> None:
     response = mirror.get(f"1.0.0/{name}")
     assert not response.complete, (len(response.body), len(data))
     assert data.startswith(response.body)
-    assert all(p["artifact"] is None for p in mirror.packages())
+    assert all(p.artifact is None for p in mirror.packages())
     assert mirror.get(f"1.0.0/{name}").body == data

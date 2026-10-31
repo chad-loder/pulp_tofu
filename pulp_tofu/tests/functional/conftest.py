@@ -3,20 +3,22 @@
 ``dev/e2e/run.sh keep`` starts the Pulp these tests use: it listens on
 ``https://localhost:8443`` with the CA and admin netrc under ``.dev/e2e``. The fake
 registry runs in the test process; Pulp reaches it as ``host.docker.internal``.
+
+Pulp objects are made through the generated bindings and pulpcore's fixtures; the
+mirror endpoints are fetched with plain HTTP, as OpenTofu fetches them.
 """
 
-import base64
 import datetime
 import http.client
 import itertools
 import json
 import netrc
+import os
 import secrets
 import ssl
-import time
 import urllib.error
 import urllib.request
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,12 +31,16 @@ from cryptography.x509.oid import NameOID
 
 from .fake_registry import NAMESPACE, FakeRegistry, serve
 
-E2E = Path(__file__).resolve().parents[3] / ".dev" / "e2e"
+ROOT = Path(__file__).resolve().parents[3]
+E2E = ROOT / ".dev" / "e2e"
 PULP_URL = "https://localhost:8443"
 UPSTREAM_HOST = "host.docker.internal"
 # Unique per session: content from earlier runs stays in Pulp and must not match.
 PROVIDER_TYPES = [f"p{secrets.token_hex(4)}" for _ in range(40)]
 VERSIONS = ["1.0.0", "1.1.0"]
+
+# pulpcore's pulp_settings fixture sets up Django with these settings.
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "pulp_dev_settings")
 
 
 @dataclass(frozen=True)
@@ -46,86 +52,50 @@ class Response:
     complete: bool
 
 
-class Pulp:
-    """A minimal REST and content client for the test Pulp."""
-
-    def __init__(self) -> None:
-        self.context = ssl.create_default_context(cafile=str(E2E / "certs" / "ca.crt"))
-        login = netrc.netrc(str(E2E / "netrc")).authenticators("pulp")
-        assert login is not None
-        token = base64.b64encode(f"{login[0]}:{login[2]}".encode()).decode()
-        self._auth = f"Basic {token}"
-
-    def api(self, method: str, path: str, body: object | None = None) -> Any:  # noqa: ANN401
-        url = path if path.startswith("https://") else f"{PULP_URL}{path}"
-        request = urllib.request.Request(url, method=method)
-        request.add_header("Authorization", self._auth)
-        data = None
-        if body is not None:
-            request.add_header("Content-Type", "application/json")
-            data = json.dumps(body).encode()
-        with urllib.request.urlopen(request, data=data, context=self.context) as response:
-            raw = response.read()
-        result = json.loads(raw) if raw else {}
-        return result
-
-    def wait(self, result: dict[str, object]) -> None:
-        """Wait for the task in an asynchronous API response."""
-        task = result.get("task")
-        if task is None:
-            return
-        for _ in range(120):
-            state = self.api("GET", str(task))["state"]
-            if state == "completed":
-                return
-            assert state not in ("failed", "canceled"), self.api("GET", str(task))
-            time.sleep(0.5)
-        raise AssertionError(f"task {task} did not finish")
-
-    def fetch(self, path: str) -> Response:
-        """GET a content path, keeping a partial body if the connection breaks."""
-        request = urllib.request.Request(f"{PULP_URL}{path}")
+def _fetch(path: str) -> Response:
+    """GET a content path, keeping a partial body if the connection breaks."""
+    context = ssl.create_default_context(cafile=str(E2E / "certs" / "ca.crt"))
+    try:
+        response = urllib.request.urlopen(f"{PULP_URL}{path}", context=context, timeout=120)
+    except urllib.error.HTTPError as exc:
+        return Response(status=exc.code, body=exc.read(), complete=True)
+    with response:
+        expected = response.headers.get("Content-Length")
+        chunks: list[bytes] = []
+        broken = False
         try:
-            response = urllib.request.urlopen(request, context=self.context, timeout=120)
-        except urllib.error.HTTPError as exc:
-            return Response(status=exc.code, body=exc.read(), complete=True)
-        with response:
-            expected = response.headers.get("Content-Length")
-            chunks: list[bytes] = []
-            broken = False
-            try:
-                while chunk := response.read(64 * 1024):
-                    chunks.append(chunk)
-            except http.client.IncompleteRead as exc:
-                chunks.append(exc.partial)
-                broken = True
-            except OSError:
-                broken = True
-            body = b"".join(chunks)
-            # A chunked body that stops early raises; a sized one just reads short.
-            complete = not broken and (expected is None or len(body) == int(expected))
-            return Response(status=response.status, body=body, complete=complete)
+            while chunk := response.read(64 * 1024):
+                chunks.append(chunk)
+        except http.client.IncompleteRead as exc:
+            chunks.append(exc.partial)
+            broken = True
+        except OSError:
+            broken = True
+        body = b"".join(chunks)
+        # A chunked body that stops early raises; a sized one just reads short.
+        complete = not broken and (expected is None or len(body) == int(expected))
+        return Response(status=response.status, body=body, complete=complete)
 
 
 @dataclass
 class Mirror:
     """One remote, repository and distribution serving one fake provider."""
 
-    pulp: Pulp
+    bindings: Any
+    monitor_task: Callable[[str], Any]
     registry: FakeRegistry
-    remote: str
-    repository: str
-    base_path: str
+    remote: Any
+    repository: Any
+    distribution: Any
     hostname: str
     provider_type: str
 
     def path(self, leaf: str) -> str:
-        return (
-            f"/pulp/tofu/{self.base_path}/{self.hostname}/{NAMESPACE}/{self.provider_type}/{leaf}"
-        )
+        base = self.distribution.base_path
+        return f"/pulp/tofu/{base}/{self.hostname}/{NAMESPACE}/{self.provider_type}/{leaf}"
 
     def get(self, leaf: str) -> Response:
-        return self.pulp.fetch(self.path(leaf))
+        return _fetch(self.path(leaf))
 
     def json(self, leaf: str) -> Any:  # noqa: ANN401
         response = self.get(leaf)
@@ -133,12 +103,17 @@ class Mirror:
         return json.loads(response.body)
 
     def update_remote(self, **fields: object) -> None:
-        self.pulp.wait(self.pulp.api("PATCH", self.remote, fields))
+        response = self.bindings.RemotesTofuApi.partial_update(self.remote.pulp_href, fields)
+        self.monitor_task(response.task)
 
-    def packages(self) -> list[dict[str, Any]]:
-        query = f"/pulp/api/v3/content/tofu/provider_packages/?provider_type={self.provider_type}"
-        results: list[dict[str, Any]] = self.pulp.api("GET", query)["results"]
-        return results
+    def packages(self) -> list[Any]:
+        listing = self.bindings.ContentProviderPackagesApi.list(provider_type=self.provider_type)
+        return list(listing.results)
+
+    def present_content(self) -> dict[str, int]:
+        repository = self.bindings.RepositoriesTofuApi.read(self.repository.pulp_href)
+        version = self.bindings.RepositoriesTofuVersionsApi.read(repository.latest_version_href)
+        return {key: value["count"] for key, value in version.content_summary.present.items()}
 
 
 def _tls_material(directory: Path) -> tuple[Path, Path, str]:
@@ -182,15 +157,19 @@ def _tls_material(directory: Path) -> tuple[Path, Path, str]:
 
 
 @pytest.fixture(scope="session")
-def pulp() -> Pulp:
+def bindings_cfg() -> Any:  # noqa: ANN401
+    """pulpcore's bindings configuration, pointed at the e2e Pulp and its CA."""
+    from pulpcore.client.pulpcore import Configuration
+
     if not (E2E / "netrc").exists():
         pytest.skip("no test Pulp; run dev/e2e/run.sh keep")
-    client = Pulp()
-    try:
-        client.api("GET", "/pulp/api/v3/status/")
-    except OSError:
-        pytest.skip("test Pulp is not reachable on https://localhost:8443")
-    return client
+    login = netrc.netrc(str(E2E / "netrc")).authenticators("pulp")
+    if login is None:
+        pytest.skip("the e2e netrc has no entry for pulp")
+    configuration = Configuration(host=PULP_URL, username=login[0], password=login[2])
+    configuration.ssl_ca_cert = str(E2E / "certs" / "ca.crt")
+    configuration.safe_chars_for_path_param = "/"
+    return configuration
 
 
 @pytest.fixture(scope="session")
@@ -207,46 +186,28 @@ _provider_types = itertools.count()
 
 
 @pytest.fixture
-def mirror(pulp: Pulp, upstream: tuple[FakeRegistry, int, str]) -> Generator[Mirror]:
+def mirror(
+    tofu_bindings: Any,
+    monitor_task: Callable[[str], Any],
+    tofu_remote_factory: Callable[..., Any],
+    tofu_repository_factory: Callable[..., Any],
+    tofu_distribution_factory: Callable[..., Any],
+    upstream: tuple[FakeRegistry, int, str],
+) -> Generator[Mirror]:
     """A fresh pull-through mirror; each test gets a provider no other test has fetched."""
     registry, port, ca = upstream
     registry.state.reset()
-    provider_type = PROVIDER_TYPES[next(_provider_types)]
-    suffix = f"{provider_type}-{time.time_ns()}"
-    remote = pulp.api(
-        "POST",
-        "/pulp/api/v3/remotes/tofu/tofu/",
-        {
-            "name": f"fake-{suffix}",
-            "url": f"https://{UPSTREAM_HOST}:{port}/",
-            "ca_cert": ca,
-            "total_timeout": 60,
-        },
-    )
-    repository = pulp.api("POST", "/pulp/api/v3/repositories/tofu/tofu/", {"name": suffix})
-    created = pulp.api(
-        "POST",
-        "/pulp/api/v3/distributions/tofu/tofu/",
-        {
-            "name": suffix,
-            "base_path": suffix,
-            "remote": remote["pulp_href"],
-            "repository": repository["pulp_href"],
-        },
-    )
-    pulp.wait(created)
+    remote = tofu_remote_factory(url=f"https://{UPSTREAM_HOST}:{port}/", ca_cert=ca)
+    repository = tofu_repository_factory()
+    distribution = tofu_distribution_factory(remote=remote, repository=repository)
     yield Mirror(
-        pulp=pulp,
+        bindings=tofu_bindings,
+        monitor_task=monitor_task,
         registry=registry,
-        remote=str(remote["pulp_href"]),
-        repository=str(repository["pulp_href"]),
-        base_path=suffix,
+        remote=remote,
+        repository=repository,
+        distribution=distribution,
         hostname=f"{UPSTREAM_HOST}:{port}",
-        provider_type=provider_type,
+        provider_type=PROVIDER_TYPES[next(_provider_types)],
     )
     registry.state.reset()
-    distributions = pulp.api("GET", f"/pulp/api/v3/distributions/tofu/tofu/?name={suffix}")
-    for distribution in distributions["results"]:
-        pulp.wait(pulp.api("DELETE", distribution["pulp_href"]))
-    pulp.wait(pulp.api("DELETE", str(repository["pulp_href"])))
-    pulp.wait(pulp.api("DELETE", str(remote["pulp_href"])))
