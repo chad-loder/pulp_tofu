@@ -1,4 +1,4 @@
 from .hashing import record_h1
-from .synchronizing import synchronize
+from .synchronizing import SyncKwargs, synchronize
 
-__all__ = ["record_h1", "synchronize"]
+__all__ = ["SyncKwargs", "record_h1", "synchronize"]

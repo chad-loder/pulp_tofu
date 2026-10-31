@@ -5,14 +5,21 @@ https://opentofu.org/docs/internals/provider-network-mirror-protocol/.
 """
 
 import json
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from typing import NotRequired, TypedDict, override
+from typing import NewType, NotRequired, Self, TypedDict, override
 
 JSON_CONTENT_TYPE = "application/json"
 
 # Provider protocol major versions this OpenTofu generation installs.
 SUPPORTED_PROTOCOL_MAJORS = frozenset({"5", "6"})
+
+# "os_arch", the key the network mirror protocol and registries use for a platform.
+PlatformKey = NewType("PlatformKey", str)
+# Go's GOOS and GOARCH values: lowercase letters and digits, never an underscore.
+_PLATFORM_KEY = re.compile(r"^([a-z0-9]+)_([a-z0-9]+)$")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -35,12 +42,28 @@ class Platform:
     os: str
     arch: str
 
+    @property
+    def key(self) -> PlatformKey:
+        """The platform's ``os_arch`` key."""
+        return PlatformKey(f"{self.os}_{self.arch}")
+
+    @classmethod
+    def from_key(cls, key: str) -> Self | None:
+        """The platform an ``os_arch`` key names, or None if it is not one."""
+        match = _PLATFORM_KEY.match(key)
+        return cls(os=match.group(1), arch=match.group(2)) if match else None
+
     @override
     def __str__(self) -> str:
-        return f"{self.os}_{self.arch}"
+        return self.key
 
 
-def protocols_supported(protocols: tuple[str, ...]) -> bool:
+def parse_platform_key(key: str) -> Platform | None:
+    """The platform an ``os_arch`` key names, or None if it is not one."""
+    return Platform.from_key(key)
+
+
+def protocols_supported(protocols: Sequence[str]) -> bool:
     """Return whether any listed provider protocol version is one OpenTofu installs.
 
     An empty list means the registry did not say, which OpenTofu accepts.
@@ -50,16 +73,24 @@ def protocols_supported(protocols: tuple[str, ...]) -> bool:
     return any(p.partition(".")[0] in SUPPORTED_PROTOCOL_MAJORS for p in protocols)
 
 
-def latest_release(versions: list[str]) -> str | None:
-    """The highest ``MAJOR.MINOR.PATCH`` version, ignoring pre-releases and build metadata.
+def latest_releases(versions: Sequence[str], count: int) -> list[str]:
+    """The ``count`` highest ``MAJOR.MINOR.PATCH`` versions, newest first.
 
-    OpenTofu resolves an unconstrained provider to its newest release the same way.
+    Pre-releases and build metadata are left out, as OpenTofu leaves them out when it
+    resolves an unconstrained provider.
     """
-    releases = [v for v in versions if all(p.isdigit() for p in v.split(".")) and v.count(".") == 2]
-    return max(releases, key=lambda v: tuple(int(p) for p in v.split(".")), default=None)
+    releases = [v for v in versions if v.count(".") == 2 and v.replace(".", "").isdigit()]
+    releases.sort(key=_release_order, reverse=True)
+    return releases[:count]
 
 
-def address_allowed(address: ProviderAddress, includes: list[str], excludes: list[str]) -> bool:
+def _release_order(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def address_allowed(
+    address: ProviderAddress, includes: Sequence[str], excludes: Sequence[str]
+) -> bool:
     """Apply case-sensitive ``hostname/namespace/type`` glob filters.
 
     An empty ``includes`` admits every provider; ``excludes`` wins over ``includes``.

@@ -8,12 +8,12 @@ objects; nothing past this module touches upstream JSON.
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from string import hexdigits
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, TypeGuard, cast
 
 from aiohttp import (
     BasicAuth,
@@ -26,8 +26,10 @@ from aiohttp import (
 from yarl import URL
 
 from .flight import SingleFlight
-from .protocol import Platform, ProviderAddress
+from .hashes import ZH_PREFIX, Sha256Hex, parse_sha256
+from .protocol import Platform, PlatformKey, ProviderAddress, parse_platform_key
 from .retry import is_retryable, retry_delay
+from .signing import ARCHIVE_NAME
 
 if TYPE_CHECKING:
     from pulpcore.plugin.download import HttpDownloader
@@ -56,6 +58,9 @@ METADATA_TOTAL_TIMEOUT = 120.0
 
 # pulpcore's Remote.DEFAULT_MAX_RETRIES, without importing models here.
 Remote_DEFAULT_MAX_RETRIES = 3
+
+# Upstream version strings become path segments and stored fields: semver characters only.
+_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$")
 
 # Failures of the connection itself, as opposed to an HTTP error status.
 _TRANSPORT_ERRORS = (ClientConnectionError, ClientPayloadError, OSError, TimeoutError)
@@ -86,7 +91,7 @@ class UpstreamVersion:
 class ReportedPackage:
     """One entry of a ``download`` response's ``packages`` map."""
 
-    zh: str | None
+    zh: Sha256Hex | None
     size: int | None
 
 
@@ -100,9 +105,9 @@ class DownloadInfo:
     download_url: str
     shasums_url: str
     shasums_signature_url: str
-    shasum: str
+    shasum: Sha256Hex
     signing_keys: tuple[str, ...]
-    packages: Mapping[str, ReportedPackage]
+    packages: Mapping[PlatformKey, ReportedPackage]
 
 
 def parse_discovery(document: object, base_url: URL) -> URL:
@@ -117,13 +122,11 @@ def parse_discovery(document: object, base_url: URL) -> URL:
 def parse_versions(document: object) -> list[UpstreamVersion]:
     """Parse a ``versions`` response, skipping entries with an invalid version string."""
     versions = _object(document, "versions response").get("versions")
-    if not isinstance(versions, list):
-        raise UpstreamError("versions response has no versions list")
     parsed: list[UpstreamVersion] = []
-    for raw in cast("list[object]", versions):
+    for raw in _list(versions, "versions"):
         entry = _object(raw, "versions entry")
         version = entry.get("version")
-        if not isinstance(version, str) or not _is_segment(version):
+        if not isinstance(version, str) or not _VERSION.match(version):
             continue
         platforms: list[Platform] = []
         for raw_platform in _list(entry.get("platforms", []), "platforms"):
@@ -147,10 +150,10 @@ def parse_download(document: object, base_url: URL) -> DownloadInfo:
     if platform is None:
         raise UpstreamError("download response has no valid os and arch")
     filename = _string(doc, "filename")
-    if not _is_segment(filename):
-        raise UpstreamError("download response filename is not a single path segment")
-    shasum = _string(doc, "shasum").lower()
-    if not _is_sha256(shasum):
+    if not ARCHIVE_NAME.match(filename):
+        raise UpstreamError("download response filename is not a plain archive name")
+    shasum = parse_sha256(_string(doc, "shasum"))
+    if shasum is None:
         raise UpstreamError("download response shasum is not a SHA-256 hex digest")
     keys: list[str] = []
     signing_keys = doc.get("signing_keys", {})
@@ -423,25 +426,30 @@ class RegistryClient:
 _FETCHES: SingleFlight[bytes] = SingleFlight()
 
 
-def _is_sha256(value: str) -> bool:
-    return len(value) == 64 and set(value) <= set(hexdigits.lower())
-
-
 def _is_segment(value: str) -> bool:
     """Return whether ``value`` stays one path segment when joined into a URL."""
     return bool(value) and "/" not in value and value not in (".", "..")
 
 
+# TypeGuard rather than TypeIs: TypeIs needs Python 3.13. json.loads only makes str keys.
+def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+    return isinstance(value, dict)
+
+
+def _is_json_list(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
 def _object(value: object, what: str) -> dict[str, object]:
-    if not isinstance(value, dict):
+    if not _is_json_object(value):
         raise UpstreamError(f"{what} is not a JSON object")
-    return cast("dict[str, object]", value)
+    return value
 
 
 def _list(value: object, what: str) -> list[object]:
-    if not isinstance(value, list):
+    if not _is_json_list(value):
         raise UpstreamError(f"{what} is not a JSON list")
-    return cast("list[object]", value)
+    return value
 
 
 def _string(doc: dict[str, object], key: str) -> str:
@@ -457,8 +465,8 @@ def _strings(value: object, what: str) -> tuple[str, ...]:
 
 def _platform(doc: dict[str, object]) -> Platform | None:
     os_name, arch = doc.get("os"), doc.get("arch")
-    if isinstance(os_name, str) and isinstance(arch, str) and os_name and arch:
-        return Platform(os=os_name, arch=arch)
+    if isinstance(os_name, str) and isinstance(arch, str):
+        return Platform.from_key(f"{os_name}_{arch}")
     return None
 
 
@@ -469,19 +477,25 @@ def _https_url(base_url: URL, value: str) -> str:
     return str(resolved)
 
 
-def _packages(value: object) -> dict[str, ReportedPackage]:
+def _packages(value: object) -> dict[PlatformKey, ReportedPackage]:
     if value is None:
         return {}
-    packages: dict[str, ReportedPackage] = {}
+    packages: dict[PlatformKey, ReportedPackage] = {}
     for key, raw in _object(value, "packages").items():
+        platform = parse_platform_key(key)
+        if platform is None:
+            continue
         entry = _object(raw, "packages entry")
         zh = None
         for item in _strings(entry.get("hashes", []), "hashes"):
-            digest = item.removeprefix("zh:")
-            if digest != item and _is_sha256(digest):
-                zh = digest
+            if item.startswith(ZH_PREFIX):
+                zh = parse_sha256(item.removeprefix(ZH_PREFIX)) or zh
         size = entry.get("package_size")
-        packages[key] = ReportedPackage(
-            zh=zh, size=size if isinstance(size, int) and size > 0 else None
+        # bool is an int subclass; JSON true must not read as a size of 1.
+        packages[platform.key] = ReportedPackage(
+            zh=zh,
+            size=size
+            if isinstance(size, int) and not isinstance(size, bool) and size > 0
+            else None,
         )
     return packages

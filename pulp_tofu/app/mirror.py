@@ -78,7 +78,7 @@ class _Source:
         remote = self.remote
         if remote is None or remote.hostname != self.address.hostname:
             return None
-        if not address_allowed(self.address, remote.includes, remote.excludes):
+        if not address_allowed(self.address, remote.include_patterns, remote.exclude_patterns):
             return None
         return remote
 
@@ -107,7 +107,7 @@ class TofuMirror(Handler):
         source = await self._source(request)
         provider_version = await self._provider_version(source, request.match_info["version"])
         h1s = {
-            (f"{p.os}_{p.arch}", p.sha256): p.h1
+            (Platform(os=p.os, arch=p.arch).key, p.sha256): p.h1
             async for p in ProviderPackage.objects.filter(
                 **_address_filter(source.address),
                 version=provider_version.version,
@@ -116,7 +116,7 @@ class TofuMirror(Handler):
         }
         archives: dict[str, ArchiveEntry] = {}
         for key, record in provider_version.archive_records().items():
-            hashes = [zh_hash(record["sha256"])]
+            hashes: list[str] = [zh_hash(record["sha256"])]
             if h1 := h1s.get((key, record["sha256"])):
                 hashes.append(h1)
             archives[key] = {
@@ -151,7 +151,7 @@ class TofuMirror(Handler):
         remote = source.upstream
         if remote is None:
             raise PathNotResolved(request.path)
-        if remote.policy == TofuRemote.STREAMED:
+        if remote.download_policy == "streamed":
             # Nothing is stored for waiters to share, so each request streams its own copy.
             return await self._pull(request, headers, remote, source, package, platform, record)
         # One request per archive downloads it; the others wait, then serve what it stored.
@@ -183,7 +183,7 @@ class TofuMirror(Handler):
             request,
             web.StreamResponse(headers=headers),
             remote_artifact,
-            save_artifact=remote.policy != TofuRemote.STREAMED,
+            save_artifact=remote.download_policy != "streamed",
             repository=source.repository,
         )
         return response

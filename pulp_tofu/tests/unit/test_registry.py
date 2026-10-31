@@ -44,6 +44,7 @@ def test_versions_parse_platforms_and_skip_bad_entries() -> None:
                     "platforms": [{"os": "linux", "arch": "amd64"}, {"os": ""}],
                 },
                 {"version": "../1.0.0"},
+                {"version": "1.0.0?x"},
                 {"version": 3},
             ]
         }
@@ -61,8 +62,9 @@ def test_download_parses_published_document() -> None:
     assert info.shasum == "9b0ac4c1d8e36a86b59ced94fa517ae9b015b1d044b3455465cc6f0eab70915d"
     assert info.shasums_url.endswith("_SHA256SUMS")
     assert len(info.signing_keys) == 1
-    assert info.packages["linux_amd64"].zh == info.shasum
-    assert info.packages["linux_amd64"].size == 5769353
+    linux = Platform(os="linux", arch="amd64").key
+    assert info.packages[linux].zh == info.shasum
+    assert info.packages[linux].size == 5769353
 
 
 def _download(**overrides: object) -> dict[str, object]:
@@ -89,10 +91,12 @@ def test_download_resolves_relative_urls() -> None:
 @pytest.mark.parametrize(
     ("override", "message"),
     [
-        ({"filename": "../p.zip"}, "single path segment"),
+        ({"filename": "../p.zip"}, "plain archive name"),
+        ({"filename": "p%2F.zip"}, "plain archive name"),
         ({"shasum": "xyz"}, "SHA-256"),
         ({"download_url": "http://evil.example/p.zip"}, "https"),
         ({"arch": None}, "os and arch"),
+        ({"os": "linux_x"}, "os and arch"),
     ],
 )
 def test_download_rejects_bad_documents(override: dict[str, object], message: str) -> None:

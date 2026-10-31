@@ -2,7 +2,7 @@
 
 from functools import partial
 from logging import getLogger
-from typing import TYPE_CHECKING, TypedDict, override
+from typing import TYPE_CHECKING, Literal, TypedDict, override
 
 from aiohttp import web
 from django.db import models
@@ -19,7 +19,11 @@ from pulpcore.plugin.models import (
 from pulpcore.plugin.repo_version_utils import remove_duplicates, validate_repo_version
 from pulpcore.plugin.util import get_domain, get_domain_pk
 
-from .protocol import ProviderAddress
+from .hashes import Sha256Hex, parse_sha256
+from .protocol import Platform, PlatformKey, ProviderAddress
+from .signing import Fingerprint, parse_fingerprint
+
+type Policy = Literal["immediate", "on_demand", "streamed"]
 
 if TYPE_CHECKING:
     from pulpcore.plugin.download import DownloaderFactory
@@ -34,8 +38,38 @@ class ArchiveRecord(TypedDict):
     """One platform's archive as recorded in ``ProviderVersion.archives``."""
 
     filename: str
-    sha256: str
+    sha256: Sha256Hex
     size: int | None
+
+
+def parse_archive_records(value: object) -> dict[PlatformKey, ArchiveRecord]:
+    """Restore ``ProviderVersion.archives`` from JSON, dropping entries of the wrong shape.
+
+    The column is only written by this plugin, so a dropped entry means a corrupted row.
+    """
+    records: dict[PlatformKey, ArchiveRecord] = {}
+    if not isinstance(value, dict):
+        return records
+    for key, raw in value.items():
+        platform = Platform.from_key(key) if isinstance(key, str) else None
+        if platform is None or not isinstance(raw, dict):
+            continue
+        filename, sha256, size = raw.get("filename"), raw.get("sha256"), raw.get("size")
+        digest = parse_sha256(sha256) if isinstance(sha256, str) else None
+        if not isinstance(filename, str) or digest is None:
+            continue
+        records[platform.key] = {
+            "filename": filename,
+            "sha256": digest,
+            "size": size if isinstance(size, int) and not isinstance(size, bool) else None,
+        }
+    return records
+
+
+def _strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
 
 
 class ProviderVersion(Content):
@@ -66,10 +100,14 @@ class ProviderVersion(Content):
             hostname=self.hostname, namespace=self.namespace, type=self.provider_type
         )
 
-    def archive_records(self) -> dict[str, ArchiveRecord]:
-        """``archives`` with its JSON shape restored."""
-        records: dict[str, ArchiveRecord] = self.archives
-        return records
+    def archive_records(self) -> dict[PlatformKey, ArchiveRecord]:
+        """``archives`` with its JSON shape checked and restored."""
+        return parse_archive_records(self.archives)
+
+    @property
+    def protocol_versions(self) -> tuple[str, ...]:
+        """``protocols`` with its JSON shape checked."""
+        return _strings(self.protocols)
 
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
@@ -139,6 +177,31 @@ class TofuRemote(Remote):
     excludes = models.JSONField(default=list)
     metadata_ttl = models.PositiveIntegerField(default=3600)
     require_signatures = models.BooleanField(default=False)
+    signing_keys = models.JSONField(default=list)
+
+    @property
+    def trusted_fingerprints(self) -> frozenset[Fingerprint]:
+        """``signing_keys`` fingerprints; empty trusts the keys the registry offers."""
+        return frozenset(f for s in _strings(self.signing_keys) if (f := parse_fingerprint(s)))
+
+    @property
+    def include_patterns(self) -> tuple[str, ...]:
+        """``includes`` with its JSON shape checked."""
+        return _strings(self.includes)
+
+    @property
+    def exclude_patterns(self) -> tuple[str, ...]:
+        """``excludes`` with its JSON shape checked."""
+        return _strings(self.excludes)
+
+    @property
+    def download_policy(self) -> Policy:
+        """``policy`` as one of the three values the serializer admits."""
+        match self.policy:
+            case "immediate" | "on_demand" | "streamed" as policy:
+                return policy
+            case other:
+                raise ValueError(f"unknown remote policy {other!r}")
 
     @property
     def hostname(self) -> str:

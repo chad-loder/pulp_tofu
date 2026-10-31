@@ -11,6 +11,7 @@ from pulpcore.plugin import serializers as platform
 from pulpcore.plugin.models import Remote
 
 from . import models
+from .signing import parse_fingerprint
 
 _PROVIDER_FIELDS = ("hostname", "namespace", "provider_type", "version")
 
@@ -121,6 +122,26 @@ class TofuRemoteSerializer(platform.RemoteSerializer):
             "other registry must always be signed."
         ),
     )
+    signing_keys = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+        default=list,
+        help_text=_(
+            "OpenPGP fingerprints whose signatures this remote accepts. Empty accepts "
+            "the keys the registry publishes with each provider; set, it refuses any "
+            "other key, including unsigned providers."
+        ),
+    )
+
+    def validate_signing_keys(self, value: list[str]) -> list[str]:
+        """Normalize fingerprints to lowercase hex without spaces."""
+        fingerprints: list[str] = []
+        for raw in value:
+            fingerprint = parse_fingerprint(raw)
+            if fingerprint is None:
+                raise serializers.ValidationError(_("Not an OpenPGP fingerprint: {}").format(raw))
+            fingerprints.append(fingerprint)
+        return fingerprints
 
     @override
     def validate_url(self, url: str) -> str:
@@ -146,6 +167,7 @@ class TofuRemoteSerializer(platform.RemoteSerializer):
             "excludes",
             "metadata_ttl",
             "require_signatures",
+            "signing_keys",
         )
         model = models.TofuRemote
 
@@ -167,7 +189,14 @@ class ProviderSelectionSerializer(serializers.Serializer[dict[str, object]]):
         child=serializers.CharField(),
         required=False,
         default=list,
-        help_text=_("Exact versions to fetch; empty fetches the latest release."),
+        help_text=_("Exact versions to fetch; empty fetches the latest releases."),
+    )
+    latest = serializers.IntegerField(
+        min_value=1,
+        max_value=100,
+        required=False,
+        default=1,
+        help_text=_("How many of the newest releases to fetch when versions is empty."),
     )
 
 
@@ -192,7 +221,8 @@ class MirrorURLField(serializers.CharField):
 
     @override
     def to_representation(self, value: object) -> str:
-        assert isinstance(value, models.TofuDistribution)
+        if not isinstance(value, models.TofuDistribution):
+            raise TypeError(f"MirrorURLField serializes distributions, not {type(value)}")
         # Same origin handling as pulpcore's BaseURLField; CONTENT_ORIGIN may be unset.
         origin = cast("str | None", settings.CONTENT_ORIGIN)
         url = URL((origin or "").rstrip("/") + models.MIRROR_PATH_PREFIX)

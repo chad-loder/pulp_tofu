@@ -178,18 +178,28 @@ class TofuRepositoryViewSet(core.RepositoryViewSet, ModifyRepositoryActionMixin,
             data=request.data, context={"request": request, "repository_pk": pk}
         )
         serializer.is_valid(raise_exception=True)
-        remote = serializer.validated_data.get("remote", repository.remote)
+        data = serializer.validated_data
+        remote = data.get("remote", repository.remote)
+        kwargs: tasks.SyncKwargs = {
+            "remote_pk": str(remote.pk),
+            "repository_pk": str(repository.pk),
+            "providers": [
+                {
+                    "namespace": str(p["namespace"]),
+                    "type": str(p["type"]),
+                    "versions": [str(v) for v in p["versions"]],
+                    "latest": int(p["latest"]),
+                }
+                for p in data["providers"]
+            ],
+            "platforms": [str(p) for p in data["platforms"]],
+            "mirror": bool(data["mirror"]),
+        }
         result = dispatch(
             tasks.synchronize,
             exclusive_resources=[repository],
             shared_resources=[remote],
-            kwargs={
-                "remote_pk": str(remote.pk),
-                "repository_pk": str(repository.pk),
-                "providers": [dict(p) for p in serializer.validated_data["providers"]],
-                "platforms": serializer.validated_data["platforms"],
-                "mirror": serializer.validated_data["mirror"],
-            },
+            kwargs=kwargs,
         )
         return core.OperationPostponedResponse(result, request)
 

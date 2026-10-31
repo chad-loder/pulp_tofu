@@ -8,10 +8,11 @@ import logging
 
 from pulpcore.plugin.util import get_domain
 
+from .hashes import Sha256Hex
 from .models import ArchiveRecord, ProviderVersion, TofuRemote
-from .protocol import Platform, ProviderAddress
+from .protocol import Platform, PlatformKey, ProviderAddress
 from .registry import RegistryClient, UpstreamError, UpstreamVersion
-from .signing import SignatureError, parse_sha256sums, verify_sha256sums
+from .signing import Fingerprint, SignatureError, parse_sha256sums, verify_sha256sums
 
 log = logging.getLogger(__name__)
 
@@ -39,23 +40,25 @@ async def fetch_provider_version(
     shasums, signature = await asyncio.gather(
         client.fetch_bytes(info.shasums_url), client.fetch_bytes(info.shasums_signature_url)
     )
-    if info.signing_keys:
-        fingerprint = verify_sha256sums(shasums, signature, info.signing_keys)
+    fingerprint: Fingerprint | None
+    trusted = remote.trusted_fingerprints
+    if info.signing_keys or trusted:
+        fingerprint = verify_sha256sums(shasums, signature, info.signing_keys, trusted=trusted)
     elif address.hostname == KEYLESS_REGISTRY and not remote.require_signatures:
-        fingerprint = ""
+        fingerprint = None
     else:
         raise SignatureError(f"{address} {upstream.version} offers no signing keys")
     sums = parse_sha256sums(shasums)
     if sums.get(info.filename) != info.shasum:
         raise UpstreamError("SHA256SUMS does not list the download document's shasum")
-    by_digest: dict[str, list[str]] = {}
+    by_digest: dict[Sha256Hex, list[str]] = {}
     for filename, digest in sums.items():
         by_digest.setdefault(digest, []).append(filename)
 
-    archives: dict[str, ArchiveRecord] = {}
+    archives: dict[PlatformKey, ArchiveRecord] = {}
     unreported: list[Platform] = []
     for platform in platforms:
-        key = str(platform)
+        key = platform.key
         reported = info.packages.get(key)
         if platform == info.platform:
             size = reported.size if reported else None
@@ -74,7 +77,7 @@ async def fetch_provider_version(
     )
     for platform, other in zip(unreported, others, strict=True):
         if sums.get(other.filename) == other.shasum:
-            archives[str(platform)] = {
+            archives[platform.key] = {
                 "filename": other.filename,
                 "sha256": other.shasum,
                 "size": None,
@@ -90,13 +93,16 @@ async def fetch_provider_version(
         protocols=list(upstream.protocols),
         shasums=shasums,
         shasums_signature=signature,
-        signing_key_fingerprint=fingerprint,
+        # The column stores no fingerprint for a provider accepted unsigned.
+        signing_key_fingerprint=fingerprint or "",
         archives=archives,
         _pulp_domain=get_domain(),
     )
 
 
-def platform_of(key: str) -> Platform:
-    """The platform for an ``os_arch`` archive key."""
-    os_name, _, arch = key.partition("_")
-    return Platform(os=os_name, arch=arch)
+def platform_of(key: PlatformKey) -> Platform:
+    """The platform for an ``os_arch`` key that ``parse_archive_records`` produced."""
+    platform = Platform.from_key(key)
+    if platform is None:
+        raise ValueError(f"not a platform key: {key!r}")
+    return platform
