@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-from pysequoia import SignatureMode, sign
 from yarl import URL
 
 from pulpcore.client.pulp_tofu.exceptions import ApiException
 from pulpcore.tests.functional.utils import PulpTaskError
 
 from .conftest import fetch
-from .fake_registry import FakeRegistry, Release
+from .fake_registry import FakeRegistry, Release, signed_release
 
 REGISTRY = "/tofu/v1/providers"
 
@@ -115,10 +114,9 @@ def test_a_published_version_cannot_change(
     publisher.publish(_files(provider_type, "1.0.0", release))
 
     [name, *_] = release.archives
-    archives = {**release.archives, name: release.archives[name] + b"\0"}
-    sums = "".join(f"{hashlib.sha256(d).hexdigest()}  {n}\n" for n, d in archives.items())
-    signature = sign(registry.key.signer(), sums.encode(), mode=SignatureMode.DETACHED, armor=False)
-    changed = Release(archives=archives, sums=sums.encode(), signature=signature)
+    changed = signed_release(
+        registry.key, {**release.archives, name: release.archives[name] + b"\0"}
+    )
     with pytest.raises(ApiException) as error:
         publisher.publish(_files(provider_type, "1.0.0", changed))
     assert error.value.status == 409
@@ -131,10 +129,7 @@ def test_release_signed_by_another_key_is_refused(
 ) -> None:
     registry, _, _ = upstream
     release = _release(registry, provider_type)
-    forged = sign(
-        registry.other_key.signer(), release.sums, mode=SignatureMode.DETACHED, armor=False
-    )
-    files = _files(provider_type, "1.0.0", Release(release.archives, release.sums, forged))
+    files = _files(provider_type, "1.0.0", signed_release(registry.other_key, release.archives))
     with pytest.raises(PulpTaskError) as error:
         publisher.publish(files)
     assert "does not verify" in error.value.task.error["description"]

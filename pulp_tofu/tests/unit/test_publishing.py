@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pulp_tofu.app.protocol import PlatformKey
+from pulp_tofu.app.protocol import Platform
 from pulp_tofu.app.publishing import ReleaseError, manifest_protocols, parse_release
 
 PREFIX = "terraform-provider-widget_1.2.0"
@@ -22,8 +22,8 @@ def test_release_files_are_sorted_by_role() -> None:
     assert release.signature == f"{PREFIX}_SHA256SUMS.sig"
     assert release.manifest == f"{PREFIX}_manifest.json"
     assert release.archives == {
-        PlatformKey("linux_amd64"): f"{PREFIX}_linux_amd64.zip",
-        PlatformKey("darwin_arm64"): f"{PREFIX}_darwin_arm64.zip",
+        Platform(os="linux", arch="amd64"): f"{PREFIX}_linux_amd64.zip",
+        Platform(os="darwin", arch="arm64"): f"{PREFIX}_darwin_arm64.zip",
     }
 
 

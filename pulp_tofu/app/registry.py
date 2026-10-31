@@ -13,7 +13,7 @@ import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, TypeGuard, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeGuard, cast
 
 from aiohttp import (
     BasicAuth,
@@ -405,7 +405,7 @@ class RegistryClient:
         else:
             storable, fresh_until = freshness(headers, now, default=None, ceiling=ceiling)
         result = CacheEntry(
-            status=404 if status == 404 else 200,
+            status=status,
             body=body,
             headers=kept_headers(headers),
             fresh_until=fresh_until,
@@ -418,7 +418,7 @@ class RegistryClient:
 
     async def _fetch_with_retries(
         self, url: str, conditional: Mapping[str, str], max_bytes: int
-    ) -> tuple[int, TransportHeaders, bytes]:
+    ) -> "_Answer":
         max_retries = self._remote.max_retries
         attempts = (DEFAULT_MAX_RETRIES if max_retries is None else max_retries) + 1
         failures = 0
@@ -432,17 +432,18 @@ class RegistryClient:
             except _TRANSPORT_ERRORS as exc:
                 error = exc
             failures += 1
-            if failures >= attempts or not is_retryable(error):
+            delay = retry_delay(failures, error)
+            if failures >= attempts or not is_retryable(error) or delay is None:
                 if isinstance(error, ClientResponseError):
                     raise UpstreamError(f"{url} answered {error.status}") from error
                 raise UpstreamUnreachable(f"{url} failed: {error!r}") from error
             if failures == 1 and not isinstance(error, ClientResponseError):
                 continue
-            await asyncio.sleep(retry_delay(failures, error))
+            await asyncio.sleep(delay)
 
     async def _fetch_once(
         self, url: str, conditional: Mapping[str, str], max_bytes: int
-    ) -> tuple[int, TransportHeaders, bytes]:
+    ) -> "_Answer":
         """One request; 200, 304 and 404 return, any other status raises.
 
         Other 2xx answers are refused: a 206 or 203 to a plain GET is not the document.
@@ -465,8 +466,10 @@ class RegistryClient:
                 auth=session.auth,
             ) as response:
                 headers = headers_from_aiohttp_response(response)
-                if response.status in (304, 404):
-                    return response.status, headers, b""
+                if response.status == 304:
+                    return 304, headers, b""
+                if response.status == 404:
+                    return 404, headers, b""
                 response.raise_for_status()
                 if response.status != 200:
                     raise UpstreamError(f"{url} answered {response.status}, not 200")
@@ -478,7 +481,7 @@ class RegistryClient:
                     body += chunk
                     if len(body) > max_bytes:
                         raise UpstreamError(f"{url} exceeds the {max_bytes}-byte limit")
-                return response.status, headers, bytes(body)
+                return 200, headers, bytes(body)
 
 
 def _answer(entry: CacheEntry, url: str) -> bytes:
@@ -486,6 +489,8 @@ def _answer(entry: CacheEntry, url: str) -> bytes:
         raise UpstreamNotFound(url)
     return entry.body
 
+
+type _Answer = tuple[Literal[200, 304, 404], TransportHeaders, bytes]
 
 _FETCHES: SingleFlight[bytes] = SingleFlight()
 _CACHE = HttpCache()

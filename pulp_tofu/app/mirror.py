@@ -234,7 +234,8 @@ class TofuMirror(Handler):
 
     @staticmethod
     def _local_versions(source: _Source) -> "QuerySet[ProviderVersion]":
-        assert source.repository_version is not None
+        if source.repository_version is None:
+            return ProviderVersion.objects.none()
         return ProviderVersion.objects.filter(
             pk__in=source.repository_version.content, **_address_filter(source.address)
         )

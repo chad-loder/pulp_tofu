@@ -21,7 +21,6 @@ from pulpcore.plugin.tasking import dispatch
 from pulpcore.plugin.util import get_domain
 
 from . import models, serializers, tasks
-from .publishing import ReleaseFiles
 
 
 def _object_policy(model: str, *, create: list[str], update: list[str]) -> list[dict[str, object]]:
@@ -331,39 +330,42 @@ class TofuNamespaceViewSet(
     )
     def publish(self, request: Request, pk: str) -> core.OperationPostponedResponse:
         """Store the release's archives, then verify and add it in a task."""
-        namespace: models.TofuNamespace = self.get_object()
-        repository = _upload_repository(namespace)
+        namespace = self.get_object()
+        if not isinstance(namespace, models.TofuNamespace):
+            raise TypeError(f"expected a TofuNamespace, got {type(namespace)}")
+        hostname, repository = _upload_target(namespace)
         serializer = serializers.ProviderReleaseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        release: ReleaseFiles = serializer.validated_data["release"]
-        small: dict[str, bytes] = serializer.validated_data["small"]
-        uploads: dict[str, UploadedFile] = serializer.validated_data["archives"]
+        upload = serializer.uploaded_release()
+        release = upload.files
 
         existing = models.ProviderVersion.objects.filter(
-            hostname=settings.TOFU_REGISTRY_HOSTNAME,
+            hostname=hostname,
             namespace=namespace.name,
             provider_type=release.provider_type,
             version=release.version,
             _pulp_domain=get_domain(),
         ).first()
-        if existing is not None and bytes(existing.shasums) != small[release.shasums]:
+        if existing is not None and bytes(existing.shasums) != upload.shasums:
             raise ReleaseConflict(
                 f"{namespace.name}/{release.provider_type} {release.version} is already published"
             )
 
-        archives = {
-            str(key): str(_stored_artifact(uploads[name]).pk)
-            for key, name in release.archives.items()
-        }
-        encoded = {name: base64.b64encode(data).decode() for name, data in small.items()}
+        def encoded(data: bytes) -> str:
+            return base64.b64encode(data).decode()
+
         kwargs: tasks.PublishKwargs = {
             "namespace_pk": str(namespace.pk),
+            "hostname": hostname,
             "provider_type": release.provider_type,
             "version": release.version,
-            "shasums": encoded[release.shasums],
-            "signature": encoded[release.signature],
-            "manifest": encoded[release.manifest] if release.manifest else None,
-            "archives": archives,
+            "shasums": encoded(upload.shasums),
+            "signature": encoded(upload.signature),
+            "manifest": encoded(upload.manifest) if upload.manifest is not None else None,
+            "archives": {
+                platform.key: str(_stored_artifact(file).pk)
+                for platform, file in upload.archives.items()
+            },
         }
         result = dispatch(
             tasks.publish_release,
@@ -382,13 +384,15 @@ class ReleaseConflict(APIException):
     default_code = "conflict"
 
 
-def _upload_repository(namespace: models.TofuNamespace) -> models.TofuRepository:
-    """The repository a release published to ``namespace`` goes into.
+def _upload_target(namespace: models.TofuNamespace) -> tuple[str, models.TofuRepository]:
+    """The origin hostname and the repository of a release published to ``namespace``.
 
     Raises:
-        ValidationError: The namespace's distribution does not accept uploads.
+        ValidationError: The registry has no hostname, or the namespace's distribution
+            does not accept uploads.
     """
-    if not settings.TOFU_REGISTRY_HOSTNAME:
+    hostname = settings.TOFU_REGISTRY_HOSTNAME
+    if not isinstance(hostname, str) or not hostname:
         raise ValidationError(_("Set TOFU_REGISTRY_HOSTNAME to publish providers."))
     if namespace.content_hostname:
         raise ValidationError(
@@ -402,7 +406,7 @@ def _upload_repository(namespace: models.TofuNamespace) -> models.TofuRepository
     repository = distribution.repository.cast() if distribution.repository else None
     if not isinstance(repository, models.TofuRepository):
         raise ValidationError(_("The namespace's distribution has no tofu repository."))
-    return repository
+    return hostname, repository
 
 
 def _stored_artifact(upload: UploadedFile) -> Artifact:

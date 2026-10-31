@@ -6,11 +6,14 @@ host: discovery at the host root names it, and each request's namespace selects 
 distribution's repository version; archive and checksum URLs point at the content app.
 """
 
-from typing import TYPE_CHECKING, Any, cast, override
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast, override
 
 from django.conf import settings
+from django.db.models import QuerySet
 from django.utils.module_loading import import_string
 from rest_framework.authentication import BaseAuthentication
+from rest_framework.permissions import BasePermission
 from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -21,7 +24,7 @@ from yarl import URL
 from pulpcore.plugin.util import get_domain
 
 from .hashes import zh_hash
-from .models import ProviderPackage, ProviderVersion, TofuNamespace
+from .models import ProviderPackage, ProviderVersion, TofuDistribution, TofuNamespace
 from .protocol import Platform
 
 if TYPE_CHECKING:
@@ -54,7 +57,7 @@ class _RegistryView(APIView):
 
     schema = None
     renderer_classes = [JSONRenderer]
-    permission_classes: list[Any] = []
+    permission_classes: list[type[BasePermission]] = []
 
     @override
     def get_authenticators(self) -> list[BaseAuthentication]:
@@ -64,7 +67,7 @@ class _RegistryView(APIView):
         )
         return [cls() for cls in (*extra, *defaults)]
 
-    def _namespace(self, request: Request, name: str) -> TofuNamespace | Response:
+    def _namespace(self, request: Request, name: str) -> "_Served | Response":
         """The namespace the caller may read, or the error response to send instead."""
         if not settings.TOFU_REGISTRY_ENABLED:
             return _errors(404, "Not Found")
@@ -80,22 +83,29 @@ class _RegistryView(APIView):
             if user.is_authenticated:
                 return _errors(403, "Forbidden")
             return _errors(401, "Unauthorized")
-        return namespace
+        return _Served(namespace=namespace, distribution=namespace.distribution)
 
     @staticmethod
-    def _versions(namespace: TofuNamespace, provider_type: str) -> "Any":
-        distribution = namespace.distribution
-        assert distribution is not None  # _namespace refuses a namespace without one.
+    def _versions(served: "_Served", provider_type: str) -> "QuerySet[ProviderVersion]":
+        distribution = served.distribution
         _, repository_version, _ = distribution.get_repository_publication_and_version()
         if repository_version is None:
             return ProviderVersion.objects.none()
-        hostname = namespace.content_hostname or settings.TOFU_REGISTRY_HOSTNAME
+        hostname = served.namespace.content_hostname or settings.TOFU_REGISTRY_HOSTNAME
         return ProviderVersion.objects.filter(
             pk__in=repository_version.content,
             hostname=hostname,
-            namespace=namespace.name,
+            namespace=served.namespace.name,
             provider_type=provider_type,
         )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Served:
+    """A namespace the caller may read, and the distribution that serves it."""
+
+    namespace: TofuNamespace
+    distribution: TofuDistribution
 
 
 class DiscoveryView(_RegistryView):
@@ -191,11 +201,9 @@ class ProviderDownloadView(_RegistryView):
         return Response(document)
 
 
-def _content_base(namespace: TofuNamespace, provider_version: ProviderVersion) -> URL:
+def _content_base(served: _Served, provider_version: ProviderVersion) -> URL:
     """The content-app URL of a provider version's directory in the namespace's mirror."""
-    distribution = namespace.distribution
-    assert distribution is not None
-    return distribution.mirror_url().joinpath(
+    return served.distribution.mirror_url().joinpath(
         provider_version.hostname,
         provider_version.namespace,
         provider_version.provider_type,

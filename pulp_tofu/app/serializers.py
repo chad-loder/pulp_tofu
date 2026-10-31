@@ -1,5 +1,6 @@
 """REST API serializers for pulp_tofu."""
 
+from dataclasses import dataclass
 from gettext import gettext as _
 from typing import cast, override
 
@@ -11,7 +12,8 @@ from pulpcore.plugin import serializers as platform
 from pulpcore.plugin.models import Remote
 
 from . import models
-from .publishing import MAX_SMALL_FILE_BYTES, ReleaseError, parse_release
+from .protocol import Platform
+from .publishing import MAX_SMALL_FILE_BYTES, ReleaseError, ReleaseFiles, parse_release
 from .signing import parse_fingerprint
 
 
@@ -376,16 +378,49 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
     @override
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
         """Sort the files into a release; read the small ones, which travel to the task."""
-        files = cast("list[UploadedFile]", attrs["files"])
-        by_name = {str(f.name): f for f in files}
+        files = attrs["files"]
+        if not isinstance(files, list):
+            raise serializers.ValidationError({"files": _("Expected a list of files.")})
+        by_name: dict[str, UploadedFile] = {}
+        for upload in cast("list[object]", files):
+            if not isinstance(upload, UploadedFile):
+                raise serializers.ValidationError({"files": _("Expected a list of files.")})
+            by_name[str(upload.name)] = upload
         try:
-            release = parse_release([str(f.name) for f in files])
+            release = parse_release(list(by_name))
         except ReleaseError as exc:
             raise serializers.ValidationError({"files": str(exc)}) from exc
-        small: dict[str, bytes] = {}
-        for name in filter(None, (release.shasums, release.signature, release.manifest)):
+
+        def read(name: str) -> bytes:
             upload = by_name[name]
             if (upload.size or 0) > MAX_SMALL_FILE_BYTES:
                 raise serializers.ValidationError({"files": f"{name} is too large"})
-            small[name] = upload.read()
-        return {"release": release, "small": small, "archives": by_name}
+            return upload.read()
+
+        return {
+            "release": UploadedRelease(
+                files=release,
+                shasums=read(release.shasums),
+                signature=read(release.signature),
+                manifest=read(release.manifest) if release.manifest else None,
+                archives={p: by_name[name] for p, name in release.archives.items()},
+            )
+        }
+
+    def uploaded_release(self) -> "UploadedRelease":
+        """The validated release; call after ``is_valid``."""
+        release = self.validated_data["release"]
+        if not isinstance(release, UploadedRelease):
+            raise TypeError("ProviderReleaseSerializer is not validated")
+        return release
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UploadedRelease:
+    """A release's files as received: the small ones read, the archives still uploads."""
+
+    files: ReleaseFiles
+    shasums: bytes
+    signature: bytes
+    manifest: bytes | None
+    archives: dict[Platform, UploadedFile]

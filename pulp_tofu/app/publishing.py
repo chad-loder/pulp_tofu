@@ -15,7 +15,7 @@ import json
 import re
 from dataclasses import dataclass
 
-from .protocol import Platform, PlatformKey, protocols_supported
+from .protocol import Platform, protocols_supported
 
 # Provider types and versions become path segments, so both are kept to plain names.
 _RELEASE_FILE = re.compile(
@@ -41,7 +41,7 @@ class ReleaseFiles:
     shasums: str
     signature: str
     manifest: str | None
-    archives: dict[PlatformKey, str]
+    archives: dict[Platform, str]
 
 
 def parse_release(filenames: list[str]) -> ReleaseFiles:
@@ -55,7 +55,7 @@ def parse_release(filenames: list[str]) -> ReleaseFiles:
         raise ReleaseError("a file is uploaded twice")
     releases: set[tuple[str, str]] = set()
     singles: dict[str, str] = {}
-    archives: dict[PlatformKey, str] = {}
+    archives: dict[Platform, str] = {}
     for name in filenames:
         match = _RELEASE_FILE.match(name)
         if match is None:
@@ -64,8 +64,9 @@ def parse_release(filenames: list[str]) -> ReleaseFiles:
         part = match["part"]
         if part.endswith(".zip"):
             platform = Platform.from_key(part.removesuffix(".zip"))
-            assert platform is not None  # The pattern admits only os_arch here.
-            archives[platform.key] = name
+            if platform is None:
+                raise ReleaseError(f"{name} does not name an os_arch platform")
+            archives[platform] = name
         else:
             singles[part] = name
     if len(releases) != 1:
