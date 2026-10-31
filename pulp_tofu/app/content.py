@@ -1,8 +1,9 @@
 """Content-app routes for the provider network mirror protocol.
 
 pulpcore's content app imports ``<plugin>.app.content`` at startup. Routes register in
-order and aiohttp takes the first match, so ``index.json`` precedes ``{version}.json``,
-and the checksum route precedes the archive route, which its paths would also match.
+order and aiohttp takes the first match, so the module route precedes the provider
+routes, ``index.json`` precedes ``{version}.json``, and the checksum route precedes the
+archive route, each of which would otherwise claim the other's paths.
 """
 
 from aiohttp import web
@@ -11,16 +12,18 @@ from django.conf import settings
 from pulpcore.plugin.content import app
 
 from .mirror import TofuMirror
-from .models import MIRROR_PATH_PREFIX
+from .models import MIRROR_PATH_PREFIX, MODULES_SEGMENT
 from .registry import POOL
 
 PREFIX = f"{MIRROR_PATH_PREFIX}{{pulp_domain}}/" if settings.DOMAIN_ENABLED else MIRROR_PATH_PREFIX
 PROVIDER = PREFIX + "{base_path:.+}/{hostname}/{namespace}/{provider_type}/"
+MODULE = PREFIX + "{base_path:.+}/" + MODULES_SEGMENT + "/{hostname}/{namespace}/{name}/{system}/"
 
 mirror = TofuMirror()
 
 app.add_routes(
     [
+        web.get(MODULE + "{version}.tar.gz", mirror.module),
         web.get(PROVIDER + "index.json", mirror.index),
         web.get(PROVIDER + "{version}.json", mirror.version),
         web.get(PROVIDER + "{version}/_checksums/{name}", mirror.checksums),

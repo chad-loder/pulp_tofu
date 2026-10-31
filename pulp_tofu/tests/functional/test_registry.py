@@ -39,8 +39,11 @@ def _json(path: str, headers: dict[str, str] | None = None) -> Any:  # noqa: ANN
     return json.loads(response.body)
 
 
-def test_discovery_names_the_providers_service() -> None:
-    assert _json("/.well-known/terraform.json") == {"providers.v1": f"{REGISTRY}/"}
+def test_discovery_names_the_provider_and_module_services() -> None:
+    assert _json("/.well-known/terraform.json") == {
+        "providers.v1": f"{REGISTRY}/",
+        "modules.v1": "/tofu/v1/modules/",
+    }
 
 
 def test_registry_serves_versions_and_signed_downloads(

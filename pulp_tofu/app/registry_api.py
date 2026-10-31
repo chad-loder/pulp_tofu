@@ -7,7 +7,7 @@ distribution's repository version; archive and checksum URLs point at the conten
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, Literal, cast, override
 
 from django.conf import settings
 from django.db.models import QuerySet
@@ -25,6 +25,7 @@ from pulpcore.plugin.util import get_domain
 from .authentication import registry_authenticators
 from .hashes import zh_hash
 from .models import (
+    ModuleVersion,
     ProviderPackage,
     ProviderVersion,
     TofuDistribution,
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     from django.contrib.auth.models import AbstractUser, AnonymousUser
 
 PROVIDERS_SERVICE = "providers.v1"
+MODULES_SERVICE = "modules.v1"
 CHECKSUMS_SEGMENT = "_checksums"
 
 
@@ -46,12 +48,12 @@ def registry_hostname() -> str | None:
     return normalize_hostname(hostname) if isinstance(hostname, str) and hostname else None
 
 
-def providers_url() -> URL:
-    """The providers.v1 API's path, with the domain segment when domains are enabled."""
+def service_url(service: Literal["providers", "modules"]) -> URL:
+    """A v1 service's path, with the domain segment when domains are enabled."""
     segments = str(settings.TOFU_REGISTRY_PATH_PREFIX).strip("/").split("/")
     if settings.DOMAIN_ENABLED:
         segments.append(str(settings.TOFU_REGISTRY_DOMAIN))
-    return URL("/").joinpath(*segments, "v1", "providers", "")
+    return URL("/").joinpath(*segments, "v1", service, "")
 
 
 def _errors(status: int, message: str) -> Response:
@@ -111,6 +113,19 @@ class _RegistryView(APIView):
             provider_type=provider_type,
         )
 
+    @staticmethod
+    def _modules(served: "_Served", name: str, system: str) -> "QuerySet[ModuleVersion]":
+        _, repository_version, _ = served.distribution.get_repository_publication_and_version()
+        if repository_version is None:
+            return ModuleVersion.objects.none()
+        return ModuleVersion.objects.filter(
+            pk__in=repository_version.content,
+            hostname=served.namespace.content_hostname or registry_hostname(),
+            namespace=served.namespace.name,
+            name=name,
+            system=system,
+        )
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Served:
@@ -126,7 +141,51 @@ class DiscoveryView(_RegistryView):
     def get(self, request: Request) -> Response:
         if not settings.TOFU_REGISTRY_ENABLED:
             return _errors(404, "Not Found")
-        return Response({PROVIDERS_SERVICE: str(providers_url())})
+        return Response(
+            {
+                PROVIDERS_SERVICE: str(service_url("providers")),
+                MODULES_SERVICE: str(service_url("modules")),
+            }
+        )
+
+
+class ModuleVersionsView(_RegistryView):
+    """``GET …/v1/modules/:namespace/:name/:system/versions``."""
+
+    def get(self, request: Request, namespace: str, name: str, system: str) -> Response:
+        found = self._namespace(request, namespace)
+        if isinstance(found, Response):
+            return found
+        versions = [
+            {"version": v}
+            for v in self._modules(found, name, system).values_list("version", flat=True)
+        ]
+        if not versions:
+            return _errors(404, "Not Found")
+        return Response({"modules": [{"versions": versions}]})
+
+
+class ModuleDownloadView(_RegistryView):
+    """``GET …/v1/modules/:namespace/:name/:system/:version/download``.
+
+    The location is both the JSON ``location`` that current OpenTofu reads and the
+    ``X-Terraform-Get`` header that older clients read. It is an HTTPS URL ending in
+    ``.tar.gz``, which go-getter unpacks by its extension.
+    """
+
+    def get(
+        self, request: Request, namespace: str, name: str, system: str, version: str
+    ) -> Response:
+        found = self._namespace(request, namespace)
+        if isinstance(found, Response):
+            return found
+        module = self._modules(found, name, system).filter(version=version).first()
+        if module is None:
+            return _errors(404, "Not Found")
+        location = _content_url(
+            found, found.distribution.mirror_url().joinpath(*module.relative_path.split("/"))
+        )
+        return Response({"location": location}, headers={"X-Terraform-Get": location})
 
 
 class ProviderVersionsView(_RegistryView):

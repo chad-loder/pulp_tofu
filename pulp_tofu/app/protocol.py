@@ -77,6 +77,22 @@ def is_provider_type(value: str) -> bool:
     return is_provider_part(value) and not value.startswith(_REDUNDANT_TYPE_PREFIXES)
 
 
+# Module names and target systems as OpenTofu's registry-address accepts them, matched
+# case-sensitively: names may also use underscores, systems only letters and digits.
+_MODULE_NAME = re.compile(r"^[0-9A-Za-z](?:[0-9A-Za-z_-]{0,62}[0-9A-Za-z])?$")
+_MODULE_SYSTEM = re.compile(r"^[0-9a-z]{1,64}$")
+
+
+def is_module_name(value: str) -> bool:
+    """Whether ``value`` is a module name OpenTofu accepts."""
+    return _MODULE_NAME.match(value) is not None
+
+
+def is_module_system(value: str) -> bool:
+    """Whether ``value`` is a module target system OpenTofu accepts."""
+    return _MODULE_SYSTEM.match(value) is not None
+
+
 def normalize_hostname(value: str) -> str:
     """A registry hostname as OpenTofu compares hostnames: lowercase, without ``:443``.
 

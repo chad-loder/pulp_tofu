@@ -1,4 +1,5 @@
-"""The task that verifies a published provider release and adds it to a repository."""
+"""The tasks that verify published provider and module releases and add them to a
+repository."""
 
 import base64
 from typing import TypedDict, Unpack
@@ -11,13 +12,14 @@ from pulpcore.plugin.util import get_domain
 from pulp_tofu.app.hashes import h1_hash
 from pulp_tofu.app.models import (
     ArchiveRecord,
+    ModuleVersion,
     ProviderPackage,
     ProviderVersion,
     TofuNamespace,
     TofuRepository,
 )
 from pulp_tofu.app.protocol import Platform, PlatformKey
-from pulp_tofu.app.publishing import ReleaseError, manifest_protocols
+from pulp_tofu.app.publishing import ReleaseError, check_module_archive, manifest_protocols
 from pulp_tofu.app.signing import parse_sha256sums, verify_sha256sums
 
 
@@ -49,16 +51,7 @@ def publish_release(**args: Unpack[PublishKwargs]) -> None:
             disagree, or the manifest is malformed.
         ReleaseConflictError: The version exists with different checksums.
     """
-    namespace = TofuNamespace.objects.select_related("distribution", "keyring").get(
-        pk=args["namespace_pk"]
-    )
-    distribution = namespace.distribution
-    if distribution is None or distribution.repository is None:
-        raise ReleaseError(f"namespace {namespace.name} has no repository to publish to")
-    repository = distribution.repository.cast()
-    if not isinstance(repository, TofuRepository):
-        raise ReleaseError(f"namespace {namespace.name} is not served by a tofu repository")
-
+    namespace, repository = _target(args["namespace_pk"])
     shasums = base64.b64decode(args["shasums"])
     signature = base64.b64decode(args["signature"])
     manifest = base64.b64decode(args["manifest"]) if args["manifest"] else None
@@ -142,3 +135,62 @@ def _package(
             package.h1 = h1_hash(archive)
         package.save(update_fields=["h1"])
     return package
+
+
+class PublishModuleKwargs(TypedDict):
+    """The JSON task arguments ``publish_module`` takes."""
+
+    namespace_pk: str
+    hostname: str
+    name: str
+    system: str
+    version: str
+    artifact_pk: str
+
+
+def publish_module(**args: Unpack[PublishModuleKwargs]) -> None:
+    """Check a module package and add it to the namespace's repository.
+
+    Raises:
+        ReleaseError: The package is not a safe ``.tar.gz`` of a module directory.
+        ReleaseConflictError: The version exists with a different package.
+    """
+    namespace, repository = _target(args["namespace_pk"])
+    artifact = Artifact.objects.get(pk=args["artifact_pk"])
+    with artifact.file.open("rb") as archive:
+        check_module_archive(archive)
+    address = {
+        "hostname": args["hostname"],
+        "namespace": namespace.name,
+        "name": args["name"],
+        "system": args["system"],
+        "version": args["version"],
+        "_pulp_domain": get_domain(),
+    }
+    with transaction.atomic():
+        existing = ModuleVersion.objects.select_for_update().filter(**address).first()
+        if existing is not None and existing.sha256 != artifact.sha256:
+            raise ReleaseConflictError(
+                f"{namespace.name}/{args['name']}/{args['system']} {args['version']} "
+                "is already published"
+            )
+        module, _ = ModuleVersion.objects.get_or_create(
+            **address, sha256=artifact.sha256, defaults={"size": artifact.size}
+        )
+        ContentArtifact.objects.get_or_create(
+            content=module, relative_path=module.relative_path, defaults={"artifact": artifact}
+        )
+    with repository.new_version() as new_version:
+        new_version.add_content(ModuleVersion.objects.filter(pk=module.pk))
+
+
+def _target(namespace_pk: str) -> tuple[TofuNamespace, TofuRepository]:
+    """The namespace and the repository of the distribution that serves it."""
+    namespace = TofuNamespace.objects.select_related("distribution", "keyring").get(pk=namespace_pk)
+    distribution = namespace.distribution
+    if distribution is None or distribution.repository is None:
+        raise ReleaseError(f"namespace {namespace.name} has no repository to publish to")
+    repository = distribution.repository.cast()
+    if not isinstance(repository, TofuRepository):
+        raise ReleaseError(f"namespace {namespace.name} is not served by a tofu repository")
+    return namespace, repository

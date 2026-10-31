@@ -29,6 +29,7 @@ from .flight import SingleFlight
 from .hashes import zh_hash
 from .models import (
     ArchiveRecord,
+    ModuleVersion,
     ProviderIndex,
     ProviderPackage,
     ProviderVersion,
@@ -203,7 +204,33 @@ class TofuMirror(Handler):
         )
         return response
 
-    async def _source(self, request: web.Request) -> _Source:
+    async def module(self, request: web.Request) -> web.StreamResponse:
+        """``GET _modules/:hostname/:namespace/:name/:system/:version.tar.gz``.
+
+        Modules are served only from the repository; there is no module pull-through.
+        """
+        distribution, _, repository_version = await self._distribution(request)
+        match = request.match_info
+        module = None
+        if repository_version is not None:
+            module = await ModuleVersion.objects.filter(
+                pk__in=repository_version.content,
+                hostname=match["hostname"],
+                namespace=match["namespace"],
+                name=match["name"],
+                system=match["system"],
+                version=match["version"],
+            ).afirst()
+        stored = await _stored_archive(module) if module is not None else None
+        if module is None or stored is None:
+            raise PathNotResolved(request.path)
+        headers = self.response_headers(module.relative_path, distribution)
+        return await self._serve_content_artifact(stored, headers, request)
+
+    async def _distribution(
+        self, request: web.Request
+    ) -> tuple[TofuDistribution, TofuRepository | None, RepositoryVersion | None]:
+        """The requested distribution, once its content guard admits the request."""
         match = request.match_info
         # Handler._stream_remote_artifact logs match_info["path"], which these routes lack.
         match["path"] = request.path
@@ -218,6 +245,11 @@ class TofuMirror(Handler):
         repository, repository_version, _ = await sync_to_async(
             distribution.get_repository_publication_and_version
         )()
+        return distribution, repository, repository_version
+
+    async def _source(self, request: web.Request) -> _Source:
+        match = request.match_info
+        distribution, repository, repository_version = await self._distribution(request)
         base_remote = distribution.remote
         remote = await base_remote.acast() if base_remote is not None else None
         return _Source(
@@ -430,8 +462,8 @@ def _in_background(work: "Coroutine[object, object, object]", what: str) -> None
     task.add_done_callback(finished)
 
 
-async def _stored_archive(package: ProviderPackage) -> ContentArtifact | None:
-    """The package's content artifact, if Pulp holds its archive."""
+async def _stored_archive(package: ProviderPackage | ModuleVersion) -> ContentArtifact | None:
+    """The content artifact holding the package's archive, if Pulp has it."""
     stored: ContentArtifact | None = (
         await ContentArtifact.objects.select_related("artifact")
         .filter(content=package, artifact__isnull=False)

@@ -8,13 +8,18 @@ A release of provider ``widget`` version ``1.2.0`` is::
     terraform-provider-widget_1.2.0_manifest.json        optional
 
 https://opentofu.org/docs/internals/provider-registry-protocol/ and GoReleaser's
-provider template both use these names.
+provider template both use these names. A module release is one ``.tar.gz`` of the
+module's directory.
 """
 
 import json
 import re
+import tarfile
 from dataclasses import dataclass
+from pathlib import PurePosixPath
+from typing import IO
 
+from .hashes import MAX_ENTRIES, MAX_UNPACKED_BYTES
 from .protocol import Platform, is_provider_type, protocols_supported
 from .versions import is_release_version
 
@@ -90,6 +95,34 @@ def parse_release(filenames: list[str]) -> ReleaseFiles:
         manifest=singles.get("manifest.json"),
         archives=archives,
     )
+
+
+def check_module_archive(archive: IO[bytes]) -> None:
+    """Refuse a module package OpenTofu would refuse or could unpack outside its target.
+
+    The package must be a gzip-compressed tar holding only directories and regular
+    files, with relative paths that stay inside it, within the unpacked size and
+    entry limits that bound provider archives.
+
+    Raises:
+        ReleaseError: The archive breaks one of those rules.
+    """
+    try:
+        with tarfile.open(fileobj=archive, mode="r:gz") as tar:
+            unpacked = 0
+            for count, member in enumerate(tar, start=1):
+                if count > MAX_ENTRIES:
+                    raise ReleaseError(f"the module package has over {MAX_ENTRIES} entries")
+                path = PurePosixPath(member.name)
+                if path.is_absolute() or ".." in path.parts:
+                    raise ReleaseError(f"{member.name} leaves the module directory")
+                if not (member.isfile() or member.isdir()):
+                    raise ReleaseError(f"{member.name} is not a file or directory")
+                unpacked += member.size
+                if unpacked > MAX_UNPACKED_BYTES:
+                    raise ReleaseError("the module package unpacks too large")
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise ReleaseError("the module package is not a .tar.gz archive") from exc
 
 
 def manifest_protocols(document: bytes | None) -> tuple[str, ...]:

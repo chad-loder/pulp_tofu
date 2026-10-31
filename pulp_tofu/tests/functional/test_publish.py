@@ -1,6 +1,8 @@
 import hashlib
+import io
 import json
 import secrets
+import tarfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -48,6 +50,26 @@ class Publisher:
                 _headers={"Authorization": f"Bearer {token}"},
             )
         return self.monitor_task(response.task)
+
+    def publish_module(self, version: str, package: bytes) -> Any:  # noqa: ANN401
+        response = self.bindings.PulpTofuNamespacesApi.publish_module(
+            self.namespace.pulp_href,
+            name="vpc",
+            system="aws",
+            version=version,
+            file=("vpc.tar.gz", package),
+        )
+        return self.monitor_task(response.task)
+
+
+def _module_package(*entries: tuple[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, data in entries:
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            tar.addfile(member, io.BytesIO(data))
+    return buffer.getvalue()
 
 
 @pytest.fixture
@@ -194,3 +216,33 @@ def test_release_job_publishes_with_a_publish_token(
     publisher.publish(files, token=token("publish"))
     base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
     assert fetch(f"{base}/versions").status == 200
+
+
+MODULES = "/tofu/v1/modules"
+
+
+def test_published_module_is_served_by_the_registry(publisher: Publisher) -> None:
+    package = _module_package(("main.tf", b'variable "cidr" {}\n'))
+    publisher.publish_module("1.0.0", package)
+    publisher.publish_module("1.0.0", package)
+
+    base = f"{MODULES}/{publisher.namespace.name}/vpc/aws"
+    listing = json.loads(fetch(f"{base}/versions").body)
+    assert listing == {"modules": [{"versions": [{"version": "1.0.0"}]}]}
+    location = json.loads(fetch(f"{base}/1.0.0/download").body)["location"]
+    assert location.endswith("/vpc/aws/1.0.0.tar.gz")
+    assert fetch(URL(location).raw_path_qs).body == package
+    assert fetch(f"{base}/9.9.9/download").status == 404
+
+
+def test_a_published_module_version_cannot_change(publisher: Publisher) -> None:
+    publisher.publish_module("1.0.0", _module_package(("main.tf", b"# one\n")))
+    with pytest.raises(ApiException) as error:
+        publisher.publish_module("1.0.0", _module_package(("main.tf", b"# two\n")))
+    assert error.value.status == 409
+
+
+def test_module_package_escaping_its_directory_is_refused(publisher: Publisher) -> None:
+    with pytest.raises(PulpTaskError) as error:
+        publisher.publish_module("1.0.0", _module_package(("../main.tf", b"# escape\n")))
+    assert "leaves the module directory" in error.value.task.error["description"]

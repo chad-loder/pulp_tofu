@@ -126,6 +126,23 @@ class ProviderPackageViewSet(core.ReadOnlyContentViewSet):
     filterset_class = ProviderPackageFilter
 
 
+class ModuleVersionFilter(core.ContentFilter):
+    """Filters for module versions."""
+
+    class Meta:
+        model = models.ModuleVersion
+        fields = ["hostname", "namespace", "name", "system", "version", "sha256"]
+
+
+class ModuleVersionViewSet(core.ReadOnlyContentViewSet):
+    """Module packages published to Pulp."""
+
+    endpoint_name = "module_versions"  # type: ignore[assignment]
+    queryset = models.ModuleVersion.objects.all()
+    serializer_class = serializers.ModuleVersionSerializer
+    filterset_class = ModuleVersionFilter
+
+
 class TofuRemoteViewSet(core.RemoteViewSet, core.RolesMixin):
     """Upstream OpenTofu provider registries."""
 
@@ -295,7 +312,7 @@ class TofuNamespaceViewSet(
         "statements": [
             *_object_policy("tofunamespace", create=[], update=[]),
             {
-                "action": ["publish"],
+                "action": ["publish", "publish_module"],
                 "principal": "authenticated",
                 "effect": "allow",
                 "condition": "has_model_or_domain_or_obj_perms:tofu.publish_tofunamespace",
@@ -336,13 +353,7 @@ class TofuNamespaceViewSet(
     )
     def publish(self, request: Request, pk: str) -> core.OperationPostponedResponse:
         """Store the release's archives, then verify and add it in a task."""
-        namespace = self.get_object()
-        if not isinstance(namespace, models.TofuNamespace):
-            raise TypeError(f"expected a TofuNamespace, got {type(namespace)}")
-        token = request.auth
-        if isinstance(token, models.TofuToken) and not token.allows(namespace, "publish"):
-            raise PermissionDenied(_("The token does not publish to this namespace."))
-        hostname, repository = _upload_target(namespace)
+        namespace, hostname, repository = self._publish_target(request)
         serializer = serializers.ProviderReleaseSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         upload = serializer.uploaded_release()
@@ -383,6 +394,72 @@ class TofuNamespaceViewSet(
             kwargs=kwargs,
         )
         return core.OperationPostponedResponse(result, request)
+
+    @extend_schema(
+        description="Publish a module package to the namespace.",
+        request={"multipart/form-data": serializers.ModuleReleaseSerializer},
+        responses={202: AsyncOperationResponseSerializer},
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        serializer_class=serializers.ModuleReleaseSerializer,
+        parser_classes=[MultiPartParser],
+        authentication_classes=registry_authentication_classes(),
+    )
+    def publish_module(self, request: Request, pk: str) -> core.OperationPostponedResponse:
+        """Store the module package, then check and add it in a task."""
+        namespace, hostname, repository = self._publish_target(request)
+        serializer = serializers.ModuleReleaseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        upload = serializer.uploaded_module()
+        artifact = _stored_artifact(upload.file)
+        existing = models.ModuleVersion.objects.filter(
+            hostname=hostname,
+            namespace=namespace.name,
+            name=upload.name,
+            system=upload.system,
+            version=upload.version,
+            _pulp_domain=get_domain(),
+        ).first()
+        if existing is not None and existing.sha256 != artifact.sha256:
+            raise ReleaseConflict(
+                f"{namespace.name}/{upload.name}/{upload.system} {upload.version} "
+                "is already published"
+            )
+        kwargs: tasks.PublishModuleKwargs = {
+            "namespace_pk": str(namespace.pk),
+            "hostname": hostname,
+            "name": upload.name,
+            "system": upload.system,
+            "version": upload.version,
+            "artifact_pk": str(artifact.pk),
+        }
+        result = dispatch(
+            tasks.publish_module,
+            exclusive_resources=[repository],
+            shared_resources=[namespace],
+            kwargs=kwargs,
+        )
+        return core.OperationPostponedResponse(result, request)
+
+    def _publish_target(
+        self, request: Request
+    ) -> tuple[models.TofuNamespace, str, models.TofuRepository]:
+        """The namespace published to, its origin hostname and its repository.
+
+        Raises:
+            PermissionDenied: A registry token does not publish to the namespace.
+            ValidationError: The namespace cannot take uploads.
+        """
+        namespace = self.get_object()
+        if not isinstance(namespace, models.TofuNamespace):
+            raise TypeError(f"expected a TofuNamespace, got {type(namespace)}")
+        token = request.auth
+        if isinstance(token, models.TofuToken) and not token.allows(namespace, "publish"):
+            raise PermissionDenied(_("The token does not publish to this namespace."))
+        hostname, repository = _upload_target(namespace)
+        return namespace, hostname, repository
 
 
 class TofuTokenViewSet(

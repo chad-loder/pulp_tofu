@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 logger = getLogger(__name__)
 
 MIRROR_PATH_PREFIX = "/pulp/tofu/"
+# Module archives sit below this segment of a distribution's path. No provider origin
+# hostname can be "_modules", so the provider routes never claim these paths.
+MODULES_SEGMENT = "_modules"
 
 
 class ArchiveRecord(TypedDict):
@@ -166,6 +169,46 @@ class ProviderPackage(Content):
         )
 
 
+class ModuleVersion(Content):
+    """One version of a module package: a ``.tar.gz`` of the module's directory.
+
+    ``namespace`` and ``name`` keep their case: OpenTofu matches module addresses
+    case-sensitively.
+    """
+
+    TYPE = "module_version"
+    repo_key_fields = ("hostname", "namespace", "name", "system", "version")  # type: ignore[assignment]
+
+    hostname = models.TextField()
+    namespace = models.TextField()
+    name = models.TextField()
+    system = models.TextField()
+    version = models.TextField()
+    sha256 = models.CharField(max_length=64)
+    size = models.BigIntegerField()
+    _pulp_domain = models.ForeignKey("core.Domain", default=get_domain_pk, on_delete=models.PROTECT)
+
+    @property
+    def relative_path(self) -> str:
+        """The archive's path below a distribution's base path."""
+        return (
+            f"{MODULES_SEGMENT}/{self.hostname}/{self.namespace}/{self.name}/{self.system}/"
+            f"{self.version}.tar.gz"
+        )
+
+    class Meta:
+        default_related_name = "%(app_label)s_%(model_name)s"
+        unique_together = (
+            "hostname",
+            "namespace",
+            "name",
+            "system",
+            "version",
+            "sha256",
+            "_pulp_domain",
+        )
+
+
 class TofuRemote(Remote):
     """An upstream OpenTofu provider registry.
 
@@ -269,7 +312,7 @@ class TofuRepository(Repository):
     """A repository of provider versions and the archives pulled through for them."""
 
     TYPE = "tofu"
-    CONTENT_TYPES = [ProviderVersion, ProviderPackage]
+    CONTENT_TYPES = [ProviderVersion, ProviderPackage, ModuleVersion]
     REMOTE_TYPES = [TofuRemote]
     PULL_THROUGH_SUPPORTED = True
 

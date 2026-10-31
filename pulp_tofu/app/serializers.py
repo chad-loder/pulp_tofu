@@ -13,9 +13,16 @@ from pulpcore.plugin.models import Remote
 
 from . import models
 from .authentication import IssuedToken, issue_token
-from .protocol import Platform, is_provider_part, normalize_hostname
+from .protocol import (
+    Platform,
+    is_module_name,
+    is_module_system,
+    is_provider_part,
+    normalize_hostname,
+)
 from .publishing import MAX_SMALL_FILE_BYTES, ReleaseError, ReleaseFiles, parse_release
 from .signing import parse_fingerprint
+from .versions import is_release_version
 
 
 class _ProviderAddressFields(serializers.Serializer[object]):
@@ -86,6 +93,79 @@ class ProviderPackageSerializer(_ProviderAddressFields, platform.SingleArtifactC
             "h1",
         )
         model = models.ProviderPackage
+
+
+class ModuleVersionSerializer(platform.SingleArtifactContentSerializer):
+    """One published version of a module package."""
+
+    hostname = serializers.CharField(read_only=True, help_text=_("Origin registry hostname."))
+    namespace = serializers.CharField(read_only=True, help_text=_("Module namespace."))
+    name = serializers.CharField(read_only=True, help_text=_("Module name."))
+    system = serializers.CharField(read_only=True, help_text=_("Target system, e.g. aws."))
+    version = serializers.CharField(read_only=True, help_text=_("Module version."))
+    sha256 = serializers.CharField(read_only=True, help_text=_("SHA-256 of the package."))
+    size = serializers.IntegerField(read_only=True, help_text=_("Bytes."))
+
+    class Meta:
+        fields = platform.SingleArtifactContentSerializer.Meta.fields + (
+            "hostname",
+            "namespace",
+            "name",
+            "system",
+            "version",
+            "sha256",
+            "size",
+        )
+        model = models.ModuleVersion
+
+
+class ModuleReleaseSerializer(serializers.Serializer[object]):
+    """One version of a module package to publish."""
+
+    name = serializers.CharField(help_text=_("Module name, e.g. vpc in pulp.example/acme/vpc/aws."))
+    system = serializers.CharField(help_text=_("Target system, e.g. aws."))
+    version = serializers.CharField(help_text=_("SemVer 2.0 version without build metadata."))
+    file = serializers.FileField(help_text=_("A .tar.gz of the module directory."))
+
+    def validate_name(self, name: str) -> str:
+        if not is_module_name(name):
+            raise serializers.ValidationError(_("OpenTofu does not accept this module name."))
+        return name
+
+    def validate_system(self, system: str) -> str:
+        if not is_module_system(system):
+            raise serializers.ValidationError(_("OpenTofu does not accept this target system."))
+        return system
+
+    def validate_version(self, version: str) -> str:
+        if not is_release_version(version):
+            raise serializers.ValidationError(
+                _("Expected a SemVer 2.0 version without build metadata.")
+            )
+        return version
+
+    def uploaded_module(self) -> "UploadedModule":
+        """The validated upload; call after ``is_valid``."""
+        data = self.validated_data
+        upload = data["file"]
+        if not isinstance(upload, UploadedFile):
+            raise TypeError("ModuleReleaseSerializer is not validated")
+        return UploadedModule(
+            name=str(data["name"]),
+            system=str(data["system"]),
+            version=str(data["version"]),
+            file=upload,
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UploadedModule:
+    """A module package as received."""
+
+    name: str
+    system: str
+    version: str
+    file: UploadedFile
 
 
 class TofuRemoteSerializer(platform.RemoteSerializer):
