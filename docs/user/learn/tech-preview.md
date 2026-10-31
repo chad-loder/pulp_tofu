@@ -8,5 +8,7 @@ without a deprecation period:
 - publishing: `allow_uploads`, namespace keyrings and the namespace `publish` action.
   See [Publish Providers](site:pulp_tofu/docs/user/guides/publish/).
 - registry tokens. See [Run a Private Registry](site:pulp_tofu/docs/user/guides/private/).
+- Pulp signing: `TofuSigningService` and namespace `signing_service`. See
+  [Sign Releases with Pulp](site:pulp_tofu/docs/admin/guides/signing/).
 - modules: the `publish_module` action, module sync and the modules.v1 endpoints. See
   [Publish Modules](site:pulp_tofu/docs/user/guides/modules/).

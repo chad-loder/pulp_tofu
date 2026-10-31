@@ -49,8 +49,12 @@ curl -u ci $(for f in terraform-provider-widget_1.2.0_*; do printf -- '-F files=
 | file | required |
 | --- | --- |
 | `terraform-provider-<type>_<version>_<os>_<arch>.zip` | one or more |
-| `terraform-provider-<type>_<version>_SHA256SUMS` | yes |
-| `terraform-provider-<type>_<version>_SHA256SUMS.sig` | yes, a binary detached signature |
+| `terraform-provider-<type>_<version>_SHA256SUMS` | yes, unless Pulp signs |
+| `terraform-provider-<type>_<version>_SHA256SUMS.sig` | yes, a binary detached signature, unless Pulp signs |
+
+When the namespace has a signing service, a release may come without the signature, or
+without the signature and `SHA256SUMS`, and Pulp signs it; see
+[Sign Releases with Pulp](site:pulp_tofu/docs/admin/guides/signing/).
 | `terraform-provider-<type>_<version>_manifest.json` | no; without it the protocol is 5.0 |
 
 The request stores the archives and returns a task. The task fails if the signature

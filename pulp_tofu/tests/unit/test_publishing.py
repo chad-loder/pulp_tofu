@@ -3,7 +3,7 @@ import json
 import pytest
 
 from pulp_tofu.app.protocol import Platform
-from pulp_tofu.app.publishing import ReleaseError, manifest_protocols, parse_release
+from pulp_tofu.app.publishing import ReleaseError, manifest_protocols, parse_release, sha256sums
 
 PREFIX = "terraform-provider-widget_1.2.0"
 RELEASE = [
@@ -31,7 +31,6 @@ def test_release_files_are_sorted_by_role() -> None:
     "files",
     [
         RELEASE[:2] + RELEASE[3:],
-        RELEASE[:3],
         RELEASE[2:],
         [*RELEASE, RELEASE[0]],
         [*RELEASE, "terraform-provider-widget_1.3.0_linux_arm64.zip"],
@@ -47,8 +46,7 @@ def test_release_files_are_sorted_by_role() -> None:
         [n.replace("1.2.0", "1.2.0+build") for n in RELEASE],
     ],
     ids=[
-        "no sums",
-        "no signature",
+        "signature without sums",
         "no archives",
         "repeated file",
         "two versions",
@@ -67,6 +65,23 @@ def test_release_files_are_sorted_by_role() -> None:
 def test_incomplete_or_mixed_releases_are_refused(files: list[str]) -> None:
     with pytest.raises(ReleaseError):
         parse_release(files)
+
+
+def test_unsigned_releases_leave_signing_to_pulp() -> None:
+    unsigned = parse_release(RELEASE[:3])
+    assert (unsigned.shasums, unsigned.signature) == (f"{PREFIX}_SHA256SUMS", None)
+    bare = parse_release(RELEASE[:2])
+    assert (bare.shasums, bare.signature) == (None, None)
+
+
+def test_generated_sums_follow_goreleaser_layout() -> None:
+    digests = {f"{PREFIX}_linux_amd64.zip": "b" * 64, f"{PREFIX}_darwin_arm64.zip": "a" * 64}
+    assert (
+        sha256sums(digests)
+        == (
+            f"{'a' * 64}  {PREFIX}_darwin_arm64.zip\n{'b' * 64}  {PREFIX}_linux_amd64.zip\n"
+        ).encode()
+    )
 
 
 @pytest.mark.parametrize(

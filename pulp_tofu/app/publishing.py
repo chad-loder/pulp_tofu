@@ -15,6 +15,7 @@ module's directory.
 import json
 import re
 import tarfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import IO
@@ -41,14 +42,23 @@ class ReleaseError(ValueError):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReleaseFiles:
-    """The filenames of one release, sorted by role."""
+    """The filenames of one release, sorted by role.
+
+    Without ``signature`` the namespace's signing service signs the release; without
+    ``shasums`` too, Pulp writes them from the archives first.
+    """
 
     provider_type: str
     version: str
-    shasums: str
-    signature: str
+    shasums: str | None
+    signature: str | None
     manifest: str | None
     archives: dict[Platform, str]
+
+
+def sha256sums(digests: Mapping[str, str]) -> bytes:
+    """A ``SHA256SUMS`` document for ``{filename: sha256}``, as GoReleaser writes one."""
+    return "".join(f"{digests[name]}  {name}\n" for name in sorted(digests)).encode()
 
 
 def parse_release(filenames: list[str]) -> ReleaseFiles:
@@ -83,15 +93,15 @@ def parse_release(filenames: list[str]) -> ReleaseFiles:
         raise ReleaseError(f"OpenTofu does not accept the provider type {provider_type!r}")
     if not is_release_version(version):
         raise ReleaseError(f"{version!r} is not a SemVer 2.0 version without build metadata")
-    if "SHA256SUMS" not in singles or "SHA256SUMS.sig" not in singles:
-        raise ReleaseError("a release needs its SHA256SUMS and SHA256SUMS.sig")
+    if "SHA256SUMS.sig" in singles and "SHA256SUMS" not in singles:
+        raise ReleaseError("SHA256SUMS.sig needs the SHA256SUMS it signs")
     if not archives:
         raise ReleaseError("a release needs at least one platform archive")
     return ReleaseFiles(
         provider_type=provider_type,
         version=version,
-        shasums=singles["SHA256SUMS"],
-        signature=singles["SHA256SUMS.sig"],
+        shasums=singles.get("SHA256SUMS"),
+        signature=singles.get("SHA256SUMS.sig"),
         manifest=singles.get("manifest.json"),
         archives=archives,
     )

@@ -1,7 +1,9 @@
 """Content, remote, repository and distribution models for OpenTofu providers."""
 
+import tempfile
 from functools import partial
 from logging import getLogger
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
 
 from aiohttp import web
@@ -17,13 +19,14 @@ from pulpcore.plugin.models import (
     Remote,
     Repository,
     RepositoryContent,
+    SigningService,
 )
 from pulpcore.plugin.repo_version_utils import remove_duplicates, validate_repo_version
 from pulpcore.plugin.util import get_domain, get_domain_pk
 
 from .hashes import Sha256Hex, parse_sha256
 from .protocol import Platform, PlatformKey, ProviderAddress, registry_host
-from .signing import Fingerprint, parse_fingerprint
+from .signing import Fingerprint, SignatureError, parse_fingerprint, verify_sha256sums
 
 type Policy = Literal["immediate", "on_demand", "streamed"]
 
@@ -399,6 +402,56 @@ class TofuDistribution(Distribution):
         ]
 
 
+class TofuSigningService(SigningService):
+    """Signs a provider release's ``SHA256SUMS`` with a binary detached signature.
+
+    The script receives the path of a ``SHA256SUMS`` file and prints
+    ``{"file": "<that path>", "signature": "<path of the signature>"}``. OpenTofu reads
+    only binary signatures, so an ASCII-armored one fails validation.
+    """
+
+    @override
+    def validate(self) -> None:
+        """Sign test data and check the signature as OpenTofu would.
+
+        Raises:
+            RuntimeError: The script's answer is malformed, the signature is armored, or
+                it does not verify against the service's public key.
+        """
+        with tempfile.TemporaryDirectory(dir=settings.WORKING_DIRECTORY) as directory:
+            sums = Path(directory) / "SHA256SUMS"
+            sums.write_bytes(
+                f"{'0' * 64}  terraform-provider-test_0.0.0_linux_amd64.zip\n".encode()
+            )
+            signature = self.sign_sums(sums, Path(directory))
+            try:
+                signer = verify_sha256sums(sums.read_bytes(), signature, [self.public_key])
+            except SignatureError as exc:
+                raise RuntimeError(
+                    f"the signing service's signature does not verify: {exc}"
+                ) from exc
+            if signer.fingerprint != parse_fingerprint(self.pubkey_fingerprint):
+                raise RuntimeError("the signing service signed with a key other than its own")
+
+    def sign_sums(self, sums: Path, working_directory: Path) -> bytes:
+        """The binary detached signature the script makes for ``sums``.
+
+        Raises:
+            RuntimeError: The script's answer is malformed or the signature is armored.
+        """
+        answer = self.sign(str(sums), env_vars={"PULP_TEMP_WORKING_DIR": str(working_directory)})
+        path = answer.get("signature") if isinstance(answer, dict) else None
+        if not isinstance(path, str):
+            raise RuntimeError("the signing service did not report a 'signature' path")
+        signature = Path(path).read_bytes()
+        if signature.lstrip().startswith(b"-----BEGIN"):
+            raise RuntimeError("the signing service made an ASCII-armored signature")
+        return signature
+
+    class Meta:
+        default_related_name = "%(app_label)s_%(model_name)s"
+
+
 class TofuNamespace(BaseModel):
     """A registry namespace: the owner of every provider and module published under it.
 
@@ -406,7 +459,8 @@ class TofuNamespace(BaseModel):
     ``content_hostname`` is the origin hostname of the content served; empty means
     content published to this Pulp, whose origin is ``TOFU_REGISTRY_HOSTNAME``. A
     ``private`` namespace answers only callers with ``view_tofunamespace`` on it.
-    Releases published to the namespace must be signed by a key in ``keyring``.
+    Releases published to the namespace must be signed by a key in ``keyring``, unless
+    they arrive unsigned and ``signing_service`` signs them.
     """
 
     name = models.TextField()
@@ -417,6 +471,9 @@ class TofuNamespace(BaseModel):
     # pulpcore's keyring repository; pulpcore.plugin does not export the model.
     keyring = models.ForeignKey(
         "core.OpenPGPKeyring", null=True, on_delete=models.SET_NULL, related_name="tofu_namespaces"
+    )
+    signing_service = models.ForeignKey(
+        TofuSigningService, null=True, on_delete=models.SET_NULL, related_name="namespaces"
     )
     content_hostname = models.TextField(blank=True, default="")
     private = models.BooleanField(default=False)

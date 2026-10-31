@@ -444,6 +444,13 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
         queryset=apps.get_model("core", "OpenPGPKeyring").objects.all(),
         help_text=_("The OpenPGP keyring holding the keys that sign the namespace's releases."),
     )
+    signing_service = serializers.HyperlinkedRelatedField(
+        required=False,
+        allow_null=True,
+        view_name="signing-services-detail",
+        queryset=models.TofuSigningService.objects.all(),
+        help_text=_("A tofu signing service that signs releases published without a signature."),
+    )
 
     def validate_name(self, name: str) -> str:
         """Accept only namespaces OpenTofu accepts in a source address."""
@@ -500,6 +507,7 @@ class TofuNamespaceSerializer(platform.ModelSerializer):
             "content_hostname",
             "private",
             "keyring",
+            "signing_service",
         )
         model = models.TofuNamespace
 
@@ -592,7 +600,8 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
         allow_empty=False,
         help_text=_(
             "The platform zips, SHA256SUMS, SHA256SUMS.sig and the optional manifest.json "
-            "of one release, under their release filenames."
+            "of one release, under their release filenames. Leave out the signature, or "
+            "the signature and SHA256SUMS, to have the namespace's signing service sign."
         ),
     )
 
@@ -612,7 +621,9 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
         except ReleaseError as exc:
             raise serializers.ValidationError({"files": str(exc)}) from exc
 
-        def read(name: str) -> bytes:
+        def read(name: str | None) -> bytes | None:
+            if name is None:
+                return None
             upload = by_name[name]
             if (upload.size or 0) > MAX_SMALL_FILE_BYTES:
                 raise serializers.ValidationError({"files": f"{name} is too large"})
@@ -623,7 +634,7 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
                 files=release,
                 shasums=read(release.shasums),
                 signature=read(release.signature),
-                manifest=read(release.manifest) if release.manifest else None,
+                manifest=read(release.manifest),
                 archives={p: by_name[name] for p, name in release.archives.items()},
             )
         }
@@ -641,7 +652,7 @@ class UploadedRelease:
     """A release's files as received: the small ones read, the archives still uploads."""
 
     files: ReleaseFiles
-    shasums: bytes
-    signature: bytes
+    shasums: bytes | None
+    signature: bytes | None
     manifest: bytes | None
     archives: dict[Platform, UploadedFile]

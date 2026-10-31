@@ -14,6 +14,8 @@ from pulpcore.client.pulp_tofu import ApiClient, Configuration, PulpTofuNamespac
 from pulpcore.client.pulp_tofu.exceptions import ApiException
 from pulpcore.tests.functional.utils import PulpTaskError
 
+from pulp_tofu.app.signing import verify_sha256sums
+
 from .conftest import E2E, PULP_URL, fetch
 from .fake_registry import FakeRegistry, Release, signed_release
 
@@ -242,3 +244,38 @@ def test_module_package_escaping_its_directory_is_refused(publisher: Publisher) 
     with pytest.raises(PulpTaskError) as error:
         publisher.publish_module("1.0.0", _module_package(("../main.tf", b"# escape\n")))
     assert "leaves the module directory" in error.value.task.error["description"]
+
+
+def test_unsigned_release_is_signed_by_the_namespace_signing_service(
+    publisher: Publisher,
+    release: Release,
+    provider_type: str,
+    pulpcore_bindings: Any,
+    tofu_namespace_factory: Callable[..., Any],
+) -> None:
+    # dev/e2e/run.sh registers this service.
+    [service] = pulpcore_bindings.SigningServicesApi.list(name="tofu-e2e").results
+    publisher.namespace = tofu_namespace_factory(
+        f"signed{secrets.token_hex(4)}",
+        publisher.distribution,
+        signing_service=service.pulp_href,
+    )
+    publisher.publish(list(release.archives.items()))
+
+    base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
+    document = json.loads(fetch(f"{base}/1.0.0/download/linux/amd64").body)
+    [key] = document["signing_keys"]["gpg_public_keys"]
+    assert key["key_id"] == service.pubkey_fingerprint[-16:].upper()
+    sums = fetch(URL(document["shasums_url"]).path).body
+    signature = fetch(URL(document["shasums_signature_url"]).path).body
+    signer = verify_sha256sums(sums, signature, [service.public_key])
+    assert signer.fingerprint == service.pubkey_fingerprint.lower()
+    assert hashlib.sha256(release.archives[document["filename"]]).hexdigest() in sums.decode()
+
+
+def test_unsigned_release_without_a_signing_service_is_refused(
+    publisher: Publisher, release: Release
+) -> None:
+    with pytest.raises(ApiException) as error:
+        publisher.publish(list(release.archives.items()))
+    assert error.value.status == 400

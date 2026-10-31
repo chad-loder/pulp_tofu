@@ -24,6 +24,7 @@ from pulpcore.plugin.util import get_domain
 
 from . import models, serializers, tasks
 from .authentication import registry_authentication_classes
+from .publishing import sha256sums
 from .registry_api import registry_hostname
 
 
@@ -368,6 +369,17 @@ class TofuNamespaceViewSet(
         serializer.is_valid(raise_exception=True)
         upload = serializer.uploaded_release()
         release = upload.files
+        if upload.signature is None and namespace.signing_service is None:
+            raise ValidationError(
+                _("The release is unsigned and the namespace has no signing service.")
+            )
+        artifacts = {platform: _stored_artifact(file) for platform, file in upload.archives.items()}
+        shasums = upload.shasums or sha256sums(
+            {
+                release.archives[platform]: artifact.sha256
+                for platform, artifact in artifacts.items()
+            }
+        )
 
         existing = models.ProviderVersion.objects.filter(
             hostname=hostname,
@@ -376,25 +388,24 @@ class TofuNamespaceViewSet(
             version=release.version,
             _pulp_domain=get_domain(),
         ).first()
-        if existing is not None and bytes(existing.shasums) != upload.shasums:
+        if existing is not None and bytes(existing.shasums) != shasums:
             raise ReleaseConflict(
                 f"{namespace.name}/{release.provider_type} {release.version} is already published"
             )
 
-        def encoded(data: bytes) -> str:
-            return base64.b64encode(data).decode()
+        def encoded(data: bytes | None) -> str | None:
+            return base64.b64encode(data).decode() if data is not None else None
 
         kwargs: tasks.PublishKwargs = {
             "namespace_pk": str(namespace.pk),
             "hostname": hostname,
             "provider_type": release.provider_type,
             "version": release.version,
-            "shasums": encoded(upload.shasums),
+            "shasums": base64.b64encode(shasums).decode(),
             "signature": encoded(upload.signature),
-            "manifest": encoded(upload.manifest) if upload.manifest is not None else None,
+            "manifest": encoded(upload.manifest),
             "archives": {
-                platform.key: str(_stored_artifact(file).pk)
-                for platform, file in upload.archives.items()
+                platform.key: str(artifact.pk) for platform, artifact in artifacts.items()
             },
         }
         result = dispatch(

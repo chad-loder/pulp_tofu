@@ -2,6 +2,7 @@
 repository."""
 
 import base64
+from pathlib import Path
 from typing import TypedDict, Unpack
 
 from django.db import transaction
@@ -35,14 +36,17 @@ class PublishKwargs(TypedDict):
     provider_type: str
     version: str
     shasums: str
-    signature: str
+    # None: the namespace's signing service signs ``shasums``.
+    signature: str | None
     manifest: str | None
     archives: dict[str, str]
 
 
 def publish_release(**args: Unpack[PublishKwargs]) -> None:
-    """Verify a release against the namespace's keyring and add it to the repository.
+    """Verify a release and add it to the repository.
 
+    A signed release must verify against the namespace's keyring. An unsigned one is
+    signed by the namespace's signing service, and must verify against its key.
     ``archives`` maps each platform key to the pk of the archive's artifact, created
     when the upload was received.
 
@@ -53,9 +57,23 @@ def publish_release(**args: Unpack[PublishKwargs]) -> None:
     """
     namespace, repository = _target(args["namespace_pk"])
     shasums = base64.b64decode(args["shasums"])
-    signature = base64.b64decode(args["signature"])
     manifest = base64.b64decode(args["manifest"]) if args["manifest"] else None
-    signer = verify_sha256sums(shasums, signature, namespace.armored_keys())
+    if args["signature"] is not None:
+        signature = base64.b64decode(args["signature"])
+        keys = namespace.armored_keys()
+    else:
+        service = namespace.signing_service
+        if service is None:
+            raise ReleaseError(f"namespace {namespace.name} has no signing service")
+        # The task's working directory, which the worker removes when the task ends.
+        sums_file = Path.cwd() / "SHA256SUMS"
+        sums_file.write_bytes(shasums)
+        try:
+            signature = service.sign_sums(sums_file, Path.cwd())
+        except RuntimeError as exc:
+            raise ReleaseError(f"the signing service failed: {exc}") from exc
+        keys = [service.public_key]
+    signer = verify_sha256sums(shasums, signature, keys)
     protocols = manifest_protocols(manifest)
     sums = parse_sha256sums(shasums)
 
@@ -200,7 +218,9 @@ class _ModuleKey(TypedDict):
 
 def _target(namespace_pk: str) -> tuple[TofuNamespace, TofuRepository]:
     """The namespace and the repository of the distribution that serves it."""
-    namespace = TofuNamespace.objects.select_related("distribution", "keyring").get(pk=namespace_pk)
+    namespace = TofuNamespace.objects.select_related(
+        "distribution", "keyring", "signing_service"
+    ).get(pk=namespace_pk)
     distribution = namespace.distribution
     if distribution is None or distribution.repository is None:
         raise ReleaseError(f"namespace {namespace.name} has no repository to publish to")
