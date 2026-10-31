@@ -50,6 +50,13 @@ class ProviderVersionSerializer(platform.NoArtifactContentSerializer):
 class ProviderPackageSerializer(platform.SingleArtifactContentSerializer):
     """One platform's archive of a provider version."""
 
+    # pulpcore sets allow_null on the field class, which the schema generator does not
+    # read, so generated clients reject the null an archive not yet downloaded has.
+    artifact = platform.SingleContentArtifactField(
+        allow_null=True,
+        help_text=_("The stored archive; null until Pulp has downloaded it."),
+    )
+
     hostname = serializers.CharField(read_only=True, help_text=_("Origin registry hostname."))
     namespace = serializers.CharField(read_only=True, help_text=_("Provider namespace."))
     provider_type = serializers.CharField(read_only=True, help_text=_("Provider type."))

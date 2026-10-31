@@ -96,7 +96,12 @@ class TofuMirror(Handler):
             local = self._local_versions(source).values_list("version", flat=True)
             versions.update([v async for v in local])
         if (remote := source.upstream) is not None:
-            listing = await self._listing(remote, source.address)
+            try:
+                listing = await self._listing(remote, source.address)
+            except web.HTTPBadGateway:
+                if not versions:
+                    raise
+                listing = []  # The repository still answers while upstream is down.
             versions.update(v.version for v in listing if protocols_supported(v.protocols))
         if not versions:
             raise PathNotResolved(request.path)
