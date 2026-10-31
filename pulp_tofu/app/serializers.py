@@ -1,6 +1,7 @@
 """REST API serializers for pulp_tofu."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from gettext import gettext as _
 from typing import cast, override
 
@@ -500,16 +501,25 @@ class TofuTokenSerializer(platform.ModelSerializer):
 
     @override
     def create(self, validated_data: dict[str, object]) -> models.TofuToken:
+        namespaces = validated_data["namespaces"]
+        if not isinstance(namespaces, list):
+            raise TypeError("TofuTokenSerializer is not validated")
+        covered = [
+            n for n in cast("list[object]", namespaces) if isinstance(n, models.TofuNamespace)
+        ]
         issued = issue_token()
         self.context["issued_token"] = issued
-        namespaces = validated_data.pop("namespaces")
         token = models.TofuToken.objects.create(
-            **validated_data,
             user=self.context["request"].user,
+            name=str(validated_data["name"]),
+            scope=str(validated_data["scope"]),
+            expires_at=expires
+            if isinstance(expires := validated_data.get("expires_at"), datetime)
+            else None,
             prefix=issued.prefix,
             digest=issued.digest,
         )
-        token.namespaces.set(cast("list[models.TofuNamespace]", namespaces))
+        token.namespaces.set(covered)
         return token
 
     class Meta:

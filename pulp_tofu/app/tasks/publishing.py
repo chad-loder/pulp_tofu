@@ -6,7 +6,7 @@ from typing import TypedDict, Unpack
 
 from django.db import transaction
 
-from pulpcore.plugin.models import Artifact, ContentArtifact
+from pulpcore.plugin.models import Artifact, ContentArtifact, Domain
 from pulpcore.plugin.util import get_domain
 
 from pulp_tofu.app.hashes import h1_hash
@@ -159,13 +159,16 @@ def publish_module(**args: Unpack[PublishModuleKwargs]) -> None:
     artifact = Artifact.objects.get(pk=args["artifact_pk"])
     with artifact.file.open("rb") as archive:
         check_module_archive(archive)
-    address = {
+    domain = get_domain()
+    if domain is None:
+        raise RuntimeError("publish_module runs without a domain")
+    address: _ModuleKey = {
         "hostname": args["hostname"],
         "namespace": namespace.name,
         "name": args["name"],
         "system": args["system"],
         "version": args["version"],
-        "_pulp_domain": get_domain(),
+        "_pulp_domain": domain,
     }
     with transaction.atomic():
         existing = ModuleVersion.objects.select_for_update().filter(**address).first()
@@ -182,6 +185,17 @@ def publish_module(**args: Unpack[PublishModuleKwargs]) -> None:
         )
     with repository.new_version() as new_version:
         new_version.add_content(ModuleVersion.objects.filter(pk=module.pk))
+
+
+class _ModuleKey(TypedDict):
+    """The fields that identify a module version within a domain."""
+
+    hostname: str
+    namespace: str
+    name: str
+    system: str
+    version: str
+    _pulp_domain: Domain
 
 
 def _target(namespace_pk: str) -> tuple[TofuNamespace, TofuRepository]:

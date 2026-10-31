@@ -14,6 +14,7 @@ from datetime import timedelta
 from typing import cast, override
 
 from django.conf import settings
+from django.contrib.auth.base_user import AbstractBaseUser
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from rest_framework.authentication import BaseAuthentication
@@ -58,7 +59,7 @@ class TofuTokenAuthentication(BaseAuthentication):
     """
 
     @override
-    def authenticate(self, request: Request) -> tuple[object, TofuToken] | None:
+    def authenticate(self, request: Request) -> tuple[AbstractBaseUser, TofuToken] | None:
         header = cast("str", request.META.get("HTTP_AUTHORIZATION", ""))
         scheme, _, credential = header.partition(" ")
         if scheme.lower() != "bearer" or not credential.startswith(TOKEN_PREFIX):
