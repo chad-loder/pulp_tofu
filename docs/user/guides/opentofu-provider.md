@@ -1,16 +1,24 @@
 # Manage Pulp with OpenTofu
 
-!!! warning "Needs an unreleased provider change"
-    The Pulp provider for OpenTofu and Terraform,
-    [e-breuninger/pulp](https://github.com/e-breuninger/terraform-provider-pulp), does
-    not yet accept the `tofu` plugin. Until a change adding it is merged and released,
-    its `pulp_remote`, `pulp_repository` and `pulp_distribution` resources refuse
-    `content_type = "tofu"`. Build the provider with that change, and point OpenTofu at
-    the build with a `dev_overrides` block.
+You can declare Pulp's own objects in OpenTofu or Terraform code, and let `tofu apply`
+create and update them, the same way you manage cloud resources. This takes a provider
+for Pulp.
 
-The `e-breuninger/pulp` provider declares Pulp remotes, repositories and distributions as
-OpenTofu resources. With `tofu` added to its accepted plugin names, it manages a
-pull-through mirror:
+That provider is
+[terraform-provider-pulp](https://github.com/e-breuninger/terraform-provider-pulp),
+published in the Terraform registry as `e-breuninger/pulp`. It is a third-party
+project, maintained by the e-breuninger organization on GitHub rather than by the Pulp
+Project. It has generic resources for remotes, repositories, distributions, content
+guards, users and roles, and a resource works with a plugin only if the provider lists
+that plugin.
+
+!!! warning "Needs an unreleased provider change"
+    The provider does not yet list the `tofu` plugin. Until a change that adds it is
+    merged and released, the `pulp_remote`, `pulp_repository` and `pulp_distribution`
+    resources refuse `content_type = "tofu"`. To use them now, build the provider with
+    that change, and point OpenTofu at the build with a `dev_overrides` block.
+
+With `tofu` in its plugin list, the provider manages a pull-through mirror:
 
 ```hcl
 terraform {

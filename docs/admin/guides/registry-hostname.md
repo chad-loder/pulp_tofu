@@ -4,8 +4,9 @@
     The registry is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
 
 OpenTofu finds a registry by fetching `https://<hostname>/.well-known/terraform.json`.
-The discovery document has no path, so a host serves one registry; namespaces route
-requests inside it, as pulp_container routes one `/v2/` API by repository path.
+The discovery document has no path, so each host serves one registry. Inside it,
+namespaces route the requests, as pulp_container routes one `/v2/` API by repository
+path.
 
 ## Turn on the registry
 
@@ -17,30 +18,37 @@ TOFU_REGISTRY_HOSTNAME = "pulp.example"
 ```
 
 `TOFU_REGISTRY_HOSTNAME` is the hostname users write in source addresses, with a port if
-it is not 443. It needs a dot: OpenTofu refuses a module registry hostname without one. It must be the host that serves Pulp's API workers over TLS. Archive,
-checksum and signature URLs in download documents start with `CONTENT_ORIGIN`, so that
-must be reachable by OpenTofu clients as well. Every setting is listed in the
-[settings reference](site:pulp_tofu/docs/admin/reference/settings/).
+it is not 443. It has three requirements:
+
+- It contains a dot. OpenTofu refuses a module registry hostname without one.
+- It is the host that serves Pulp's API workers over TLS.
+- OpenTofu clients can also reach `CONTENT_ORIGIN`, because the archive, checksum and
+  signature URLs in download documents start with it.
+
+The [settings reference](site:pulp_tofu/docs/admin/reference/settings/) lists every
+setting.
 
 ## Route the registry
 
 The registry runs in the API workers. The shipped snippets route two locations to them:
 
-- `location = /.well-known/terraform.json`, an exact match, so it wins over a
-  `/.well-known/` prefix block such as the ACME one in Pulp's container images;
-- `location /tofu/`, the `TOFU_REGISTRY_PATH_PREFIX`. Change both together.
+- `location = /.well-known/terraform.json`. This exact match wins over any
+  `/.well-known/` prefix block, such as the ACME block in Pulp's container images.
+- `location /tofu/`, the `TOFU_REGISTRY_PATH_PREFIX`. If you change the prefix, change
+  this location with it.
 
-Include the nginx snippet in the server block for `TOFU_REGISTRY_HOSTNAME`; see
-[Install the Plugin](site:pulp_tofu/docs/admin/guides/install/) for where it lives.
+Include the nginx snippet in the server block for `TOFU_REGISTRY_HOSTNAME`. For where the
+snippet lives, see [Install the Plugin](site:pulp_tofu/docs/admin/guides/install/).
 
 ## Domains
 
 With `DOMAIN_ENABLED`, the registry serves the domain named by `TOFU_REGISTRY_DOMAIN`,
-below `/tofu/<domain>/v1/providers/`. One host still serves one domain's registry.
+below `/tofu/<domain>/v1/providers/`. One host still serves only one domain's registry.
 
 ## Authentication
 
-Registry requests authenticate with pulpcore's `DEFAULT_AUTHENTICATION_CLASSES`, after
-any classes listed in `TOFU_AUTHENTICATION_CLASSES`. OpenTofu sends the credential in
-`TF_TOKEN_<hostname>` as `Authorization: Bearer`, so a public registry needs nothing,
-and a private namespace needs an authentication class that accepts bearer tokens.
+Registry requests authenticate first with any classes in `TOFU_AUTHENTICATION_CLASSES`,
+then with pulpcore's `DEFAULT_AUTHENTICATION_CLASSES`. OpenTofu sends the credential from
+`TF_TOKEN_<hostname>` as `Authorization: Bearer`. A public registry needs no
+authentication. A private namespace needs an authentication class that accepts bearer
+tokens.

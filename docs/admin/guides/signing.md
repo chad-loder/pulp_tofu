@@ -3,15 +3,16 @@
 !!! warning "Tech preview"
     Pulp signing is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
 
-A namespace with a signing service accepts provider releases without a signature, and
-Pulp signs their `SHA256SUMS` with the service's key. Publishers then need no key of
-their own; OpenTofu verifies against the service's public key, which the registry lists.
+A namespace with a signing service accepts provider releases without a signature. Pulp
+signs each release's `SHA256SUMS` with the service's key, so publishers need no key of
+their own. The registry lists the service's public key, and OpenTofu verifies against
+it.
 
 ## Register a service
 
-A signing service is a script Pulp's workers run with the path of a `SHA256SUMS` file.
-It must write a **binary** detached signature, since OpenTofu does not read
-ASCII-armored ones, and print where it wrote it:
+A signing service is a script that Pulp's workers run with the path of a `SHA256SUMS`
+file. The script must write a **binary** detached signature, because OpenTofu does not
+read ASCII-armored ones. It must then print where it wrote the signature:
 
 ```sh title="/var/lib/pulp/sign-tofu.sh"
 #!/bin/sh
@@ -28,13 +29,31 @@ pulpcore-manager add-signing-service tofu-releases /var/lib/pulp/sign-tofu.sh <f
   --class tofu:TofuSigningService
 ```
 
-Registration signs test data and refuses the service if the signature is armored, does
-not verify against the key, or was made with another key.
+Registration signs test data, and refuses the service in three cases:
 
-## Use it
+- The signature is armored.
+- The signature does not verify against the key.
+- The script signed with a different key.
 
-Set the namespace's `signing_service` to the service's `pulp_href` from
-`/pulp/api/v3/signing-services/`. Releases then may leave out `SHA256SUMS.sig`, and may
-leave out `SHA256SUMS` too, which Pulp writes from the archives as GoReleaser would. A
-release that carries its own signature still has to verify against the namespace's
-keyring.
+## Sign a namespace's releases
+
+To have Pulp sign the releases published to `acme`:
+
+=== "pulp-cli"
+
+    ```bash
+    service=$(pulp signing-service show --name tofu-releases | jq -r .pulp_href)
+    pulp tofu namespace update --name acme --signing-service "$service"
+    ```
+
+=== "REST API"
+
+    ```bash
+    service=$(curl -u admin "$PULP/pulp/api/v3/signing-services/?name=tofu-releases" \
+      | jq -r '.results[0].pulp_href')
+    curl -u admin -X PATCH --json '{"signing_service": "'"$service"'"}' "$PULP<namespace pulp_href>"
+    ```
+
+Publishers can then leave out `SHA256SUMS.sig`. They can leave out `SHA256SUMS` too, and
+Pulp writes it from the archives, as GoReleaser would. If a release does carry its own
+signature, that signature must still verify against the namespace's keyring.

@@ -1,16 +1,17 @@
 # Welcome to Pulp OpenTofu
 
 !!! warning "Beta, and not part of the Pulp Project"
-    pulp_tofu is developed outside the Pulp Project and is not in Pulp's images or on
-    pulpproject.org. Its API may change between releases. See
+    pulp_tofu is a third-party plugin, developed outside the Pulp Project. You install
+    it yourself, its documentation lives here, and its API may change between releases.
+    See
     [Beta Status](site:pulp_tofu/docs/user/learn/tech-preview/).
 
 With the `tofu` plugin, `tofu init` installs providers and modules from your Pulp
 instead of the public registry. Installs keep working when the registry is slow or
-down, and Pulp checks each provider against its publisher's signature before serving
-it. You can also publish your own providers and modules to your Pulp.
+down. Before Pulp serves a provider, it checks the provider against its publisher's
+signature. You can also publish your own providers and modules to your Pulp.
 
-It is a plugin for [Pulp](site:/) and assumes some familiarity with the
+These docs assume some familiarity with [Pulp](site:/) and the
 [pulpcore documentation](site:pulpcore/).
 
 ## What do you want to do?

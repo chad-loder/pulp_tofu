@@ -3,8 +3,8 @@
 pulp_tofu is a beta plugin developed outside the Pulp Project. It builds on pulpcore's
 plugin API and follows Pulp's conventions, but it is not a Pulp Project component:
 
-- Pulp's container images and the Pulp operator do not include it; install it yourself,
-  as in [Install the Plugin](site:pulp_tofu/docs/admin/guides/install/).
+- Pulp's container images and the Pulp operator do not include it. Install it yourself,
+  as described in [Install the Plugin](site:pulp_tofu/docs/admin/guides/install/).
 - Its documentation lives on its own site, not on pulpproject.org.
 - Report problems to [its GitHub issues](https://github.com/chad-loder/pulp_tofu/issues),
   not to Pulp's trackers.

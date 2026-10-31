@@ -12,6 +12,23 @@ docs_dir: "../../../pages-root"
 site_dir: "../../../site"
 theme:
   custom_dir: "theme"
+  # pulp-docs' features, restated because INHERIT replaces lists, plus linked tabs:
+  # choosing pulp-cli or REST API once switches every example on the site.
+  features:
+    - navigation.indexes
+    - content.code.annotate
+    - navigation.tabs
+    - navigation.sections
+    - navigation.path
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.annotation
+    - content.code.copy
+    - content.action.edit
+    - announce.dismiss
+    - content.tabs.link
 copyright: |
   pulp_tofu contributors. Not a Pulp Project component.
 hooks:

@@ -1,60 +1,71 @@
 # Caching and Upstream Load
 
-Pulp keeps three kinds of upstream data, each with its own freshness rule.
+Pulp keeps three kinds of upstream data, and refreshes each on its own schedule.
 
 | data | stored as | refreshed |
 | --- | --- | --- |
 | A provider's version list | a cached listing per remote | after `metadata_ttl` seconds, in the background |
-| A version's signed checksums | `ProviderVersion` content | never; a published version does not change |
+| A version's signed checksums | `ProviderVersion` content | never, because a published version does not change |
 | An archive | `ProviderPackage` content with an artifact | never |
 
 ## Version lists
 
 When a cached list is older than `metadata_ttl`, Pulp answers from it at once and fetches
-a fresh one in the background. Only a provider never listed before waits for the
-registry. If the registry fails, the last list keeps being served. A registry's "no such
-provider" is remembered for 60 seconds, so retrying clients do not each reach the
-registry.
+a fresh list in the background. A client waits for the registry only for a provider
+Pulp has never listed. If the registry fails, Pulp keeps serving the last list.
+
+When a registry answers that a provider does not exist, Pulp remembers the answer for
+60 seconds. Retrying clients then do not each reach the registry.
 
 ## HTTP caching of registry responses
 
-Small registry documents (service discovery, version lists, download documents,
-checksums and their signatures) are also cached by HTTP rules, as a shared cache would cache them. `Cache-Control: max-age`
-or `Expires` sets how long a response stays fresh. A `no-store` or `private` response is
-not kept. A `no-cache` response, or one with no freshness, is kept and revalidated with
-`If-None-Match` or `If-Modified-Since`, so an unchanged listing costs the registry a
-304 rather than a body. A 404 is kept for its `max-age`, at most 60 seconds. Pulp caps
-every lifetime, so a registry that marks a listing fresh for a year cannot hide new
-releases.
+Pulp also caches small registry documents by HTTP rules, as a shared cache would. These
+documents are service discovery, version lists, download documents, and checksums with
+their signatures.
+
+- `Cache-Control: max-age` or `Expires` sets how long Pulp treats a response as fresh.
+- Pulp does not keep a `no-store` or `private` response.
+- Pulp keeps a `no-cache` response, or one with no freshness information, and
+  revalidates it with `If-None-Match` or `If-Modified-Since`. An unchanged listing then
+  costs the registry a 304 instead of a full body.
+- Pulp keeps a 404 for its `max-age`, at most 60 seconds.
+
+Pulp caps every lifetime, so a registry that marks a listing fresh for a year cannot
+hide new releases.
 
 ## Retries
 
-Pulp retries a registry request or archive download that failed with 429, a 5xx status
-or a transport error. It waits as long as `Retry-After` asks, and gives up when the
-registry asks for more than 30 seconds, because a client is waiting. Otherwise it
-waits a random time below a ceiling that starts at half a second and doubles with
-each failure, up to 10 seconds.
+Pulp retries a registry request or an archive download that fails with 429, with a 5xx
+status, or with a transport error:
+
+- If the registry sends `Retry-After`, Pulp waits that long. If the registry asks for
+  more than 30 seconds, Pulp gives up, because a client is waiting.
+- Otherwise, Pulp waits a random time below a ceiling. The ceiling starts at half a
+  second and doubles with each failure, up to 10 seconds.
 
 ## Concurrent first requests
 
-When many clients ask for the same uncached provider at once, one request per Pulp
-content worker goes upstream; the others wait for it and share the result. That holds
-for version lists, signature checks and archive downloads.
+When many clients ask for the same uncached provider at once, each Pulp content worker
+sends one request upstream. Its other clients wait for that request and share the
+result. This applies to version lists, signature checks and archive downloads.
 
 ## Interrupted downloads
 
-If the connection to the upstream drops partway through an archive, Pulp resumes it with
-a `Range` request from the last byte it sent the client, provided the upstream offered a
-strong `ETag` or a `Last-Modified` date. The client's download continues as one stream.
-Without either, the client's download fails and nothing is stored; the client's retry
-starts afresh. Attempts that make progress do not use up the remote's `max_retries`.
+If the upstream connection drops partway through an archive, Pulp can resume the
+download. It sends a `Range` request starting at the last byte it sent the client, and
+the client's download continues as one stream. Pulp can resume only if the upstream
+offered a strong `ETag` or a `Last-Modified` date.
 
-A download with no byte for 60 seconds counts as stalled and is retried, unless the
-remote sets `sock_read_timeout`. There is no overall deadline unless the remote sets
-`total_timeout`, so a slow large archive keeps going.
+Without either, the client's download fails and Pulp stores nothing. The client's retry
+then starts from the beginning. Attempts that make progress do not count against the
+remote's `max_retries`.
+
+If no byte arrives for 60 seconds, Pulp treats the download as stalled and retries it.
+A remote's `sock_read_timeout` replaces the 60 seconds. A download has no overall
+deadline unless the remote sets `total_timeout`, so a slow, large archive keeps going.
 
 ## Connections
 
-Registry requests from one content worker share kept-alive connections. A connection the
-registry or the network closed while idle is replaced on the next request without
-counting as a failure.
+Registry requests from one content worker share kept-alive connections. When the
+registry or the network closes an idle connection, Pulp opens a new one on the next
+request, and does not count the closed connection as a failure.

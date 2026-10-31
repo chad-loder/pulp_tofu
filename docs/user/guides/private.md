@@ -3,27 +3,39 @@
 !!! warning "Tech preview"
     Registry tokens are a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
 
-A private namespace answers registry requests only from users allowed to view it. OpenTofu
-authenticates with a bearer token read from `TF_TOKEN_<hostname>`, with dots in the
-hostname written as underscores.
+A private namespace answers registry requests only from users allowed to view it.
+OpenTofu authenticates with a bearer token that it reads from `TF_TOKEN_<hostname>`.
+In the variable name, dots in the hostname become underscores.
 
 ## Create a token
 
-A user creates a token for the namespaces it should reach. Pulp shows the token once.
+Each user creates their own tokens, for the namespaces they need. Pulp shows a token
+only once, when it creates it.
 
-To create a token and hand it to OpenTofu:
+To create a token for the namespace `acme` and hand it to OpenTofu:
 
-```bash
-curl -u alice --json '{
-  "name": "laptop",
-  "namespaces": ["<namespace pulp_href>"],
-  "scope": "read",
-  "expires_at": "2027-01-01T00:00:00Z"
-}' "$PULP/pulp/api/v3/pulp_tofu/tokens/"
-export TF_TOKEN_pulp_example="tofu_..."
-```
+=== "pulp-cli"
 
-A token acts as its user, narrowed to its namespaces and to its scope:
+    ```bash
+    namespace=$(pulp tofu namespace show --name acme | jq -r .pulp_href)
+    pulp tofu token create --name laptop --namespace "$namespace" --scope read \
+      --expires-at 2027-01-01T00:00:00Z
+    export TF_TOKEN_pulp_example="tofu_..."
+    ```
+
+=== "REST API"
+
+    ```bash
+    curl -u alice --json '{
+      "name": "laptop",
+      "namespaces": ["<namespace pulp_href>"],
+      "scope": "read",
+      "expires_at": "2027-01-01T00:00:00Z"
+    }' "$PULP/pulp/api/v3/pulp_tofu/tokens/"
+    export TF_TOKEN_pulp_example="tofu_..."
+    ```
+
+A token acts as its user, limited to its namespaces and its scope:
 
 | scope | allows |
 | --- | --- |
@@ -31,34 +43,49 @@ A token acts as its user, narrowed to its namespaces and to its scope:
 | `update` | also publishing new versions of providers and modules the namespace already serves |
 | `publish` | also publishing new providers and modules |
 
-A release job can use an `update` or `publish` token in place of a password. Give it
-`update` once its provider or module is published: if the token leaks, it cannot add a
-lookalike name to the namespace. Pulp stores only a digest of the token. Delete the
-token to revoke it; every user sees and deletes only their own tokens.
+A release job can use an `update` or `publish` token in place of a password. Once the
+job's provider or module is published, switch it to an `update` token. Then, if the
+token leaks, nobody can use it to add a lookalike name to the namespace.
+
+Pulp stores only a digest of each token. To revoke a token, delete it. Users see and
+delete only their own tokens.
 
 ## Authenticate CI with Workload Identity
 
-From pulpcore 3.120, pulpcore's Workload Identity accepts a CI provider's short-lived OIDC
-token as the bearer token and grants roles per request from claim rules. Once an
-administrator enables it in pulpcore's settings, the registry and the namespace `publish`
-action accept those tokens with nothing further to configure here. Grant the job
-`tofu.tofunamespace_consumer` to read or `tofu.tofunamespace_collaborator` to publish.
+From pulpcore 3.120, pulpcore's Workload Identity accepts a CI provider's short-lived
+OIDC token as the bearer token, and grants roles for each request from claim rules. An
+administrator enables it in pulpcore's settings. The registry and the namespace
+`publish` action then accept those tokens, with nothing more to configure in
+pulp_tofu.
+
+Grant the job `tofu.tofunamespace_consumer` to read, or
+`tofu.tofunamespace_collaborator` to publish.
 
 ## Guard archive downloads
 
-OpenTofu sends no credentials when it downloads archives, checksums and signatures. A
-private namespace's archive URLs are readable by anyone who knows them unless the
-distribution has a content guard. Use a `ContentRedirectContentGuard`: the registry then
-answers with URLs the guard has signed, valid for one hour. Other content guards refuse
-OpenTofu's downloads.
+OpenTofu sends no credentials when it downloads archives, checksums and signatures.
+Without a content guard on the distribution, anyone who knows a private namespace's
+archive URLs can download them.
 
-To guard a distribution's downloads:
+Use a `ContentRedirectContentGuard`. The registry then answers with URLs that the guard
+has signed, valid for one hour. Other content guards refuse OpenTofu's downloads.
 
-```bash
-guard=$(curl -u admin --json '{"name": "tofu-redirect"}' \
-  "$PULP/pulp/api/v3/contentguards/core/content_redirect/" | jq -r .pulp_href)
-curl -u admin -X PATCH --json '{"content_guard": "'"$guard"'"}' "$PULP<distribution pulp_href>"
-```
+To guard the downloads from the distribution `acme`:
+
+=== "pulp-cli"
+
+    ```bash
+    pulp content-guard redirect create --name tofu-redirect
+    pulp tofu distribution update --name acme --content-guard core:content_redirect:tofu-redirect
+    ```
+
+=== "REST API"
+
+    ```bash
+    guard=$(curl -u admin --json '{"name": "tofu-redirect"}' \
+      "$PULP/pulp/api/v3/contentguards/core/content_redirect/" | jq -r .pulp_href)
+    curl -u admin -X PATCH --json '{"content_guard": "'"$guard"'"}' "$PULP<distribution pulp_href>"
+    ```
 
 ## Troubleshooting
 
@@ -73,11 +100,11 @@ Error: Error accessing remote module registry
 pulp.example: error looking up module versions: 401 Unauthorized.
 ```
 
-Provider installs fail the same way. This issue occurs when OpenTofu sent no
-credentials: `TF_TOKEN_<hostname>` is unset, or named for a different hostname. Dots in
-the hostname are underscores in the variable name, so `pulp.example` reads
-`TF_TOKEN_pulp_example`.
+Provider installs fail the same way. This issue occurs when OpenTofu sends no
+credentials, because `TF_TOKEN_<hostname>` is unset or names a different hostname. In
+the variable name, dots in the hostname become underscores: for `pulp.example`,
+OpenTofu reads `TF_TOKEN_pulp_example`.
 
 To resolve it, create a token for the namespace and export it under the hostname's
-variable name. An answer of 403 instead means the token or user lacks read access to
-the namespace.
+variable name. If Pulp answers 403 instead, the token or user has no read access to the
+namespace.
