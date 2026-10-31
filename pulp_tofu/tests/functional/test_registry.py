@@ -108,7 +108,7 @@ def test_token_reads_only_its_namespaces(
     def token(*namespaces: Any, **body: object) -> str:  # noqa: ANN401
         hrefs = [n.pulp_href for n in namespaces]
         body.update(name="ci", namespaces=hrefs)
-        return gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token
+        return str(gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token)
 
     path = f"{REGISTRY}/{NAMESPACE}/{mirror.provider_type}/versions"
     good = token(namespace)

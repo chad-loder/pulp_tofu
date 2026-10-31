@@ -39,9 +39,10 @@ class Publisher:
             configuration.ssl_ca_cert = str(E2E / "certs" / "ca.crt")
             configuration.safe_chars_for_path_param = "/"
             api = PulpTofuNamespacesApi(ApiClient(configuration))
+            wire: list[bytes | str | tuple[str, bytes]] = [*files]
             response = api.publish(
                 self.namespace.pulp_href,
-                files=files,
+                files=wire,
                 _headers={"Authorization": f"Bearer {token}"},
             )
         return self.monitor_task(response.task)
@@ -183,7 +184,7 @@ def test_release_job_publishes_with_a_publish_token(
 
     def token(scope: str) -> str:
         body = {"name": scope, "scope": scope, "namespaces": [publisher.namespace.pulp_href]}
-        return gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token
+        return str(gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token)
 
     with pytest.raises(ApiException) as error:
         publisher.publish(files, token=token("read"))
