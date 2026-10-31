@@ -1,16 +1,27 @@
 """REST API viewsets for pulp_tofu."""
 
+import base64
+from gettext import gettext as _
+
+from django.conf import settings
+from django.core.files.uploadedfile import UploadedFile
+from django.db import IntegrityError
 from drf_spectacular.utils import extend_schema
 from rest_framework import mixins
 from rest_framework.decorators import action
+from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
 
 from pulpcore.plugin import viewsets as core
 from pulpcore.plugin.actions import ModifyRepositoryActionMixin
+from pulpcore.plugin.models import Artifact
 from pulpcore.plugin.serializers import AsyncOperationResponseSerializer
 from pulpcore.plugin.tasking import dispatch
+from pulpcore.plugin.util import get_domain
 
 from . import models, serializers, tasks
+from .publishing import ReleaseFiles
 
 
 def _object_policy(model: str, *, create: list[str], update: list[str]) -> list[dict[str, object]]:
@@ -278,7 +289,15 @@ class TofuNamespaceViewSet(
 
     DEFAULT_ACCESS_POLICY = {
         # The serializer checks that the caller may view the distribution it names.
-        "statements": _object_policy("tofunamespace", create=[], update=[]),
+        "statements": [
+            *_object_policy("tofunamespace", create=[], update=[]),
+            {
+                "action": ["publish"],
+                "principal": "authenticated",
+                "effect": "allow",
+                "condition": "has_model_or_domain_or_obj_perms:tofu.publish_tofunamespace",
+            },
+        ],
         "creation_hooks": _creation_hooks("tofunamespace"),
         "queryset_scoping": {"function": "scope_queryset"},
     }
@@ -298,3 +317,115 @@ class TofuNamespaceViewSet(
         ],
         "tofu.tofunamespace_consumer": ["tofu.view_tofunamespace"],
     }
+
+    @extend_schema(
+        description="Publish a provider release to the namespace.",
+        request={"multipart/form-data": serializers.ProviderReleaseSerializer},
+        responses={202: AsyncOperationResponseSerializer},
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        serializer_class=serializers.ProviderReleaseSerializer,
+        parser_classes=[MultiPartParser],
+    )
+    def publish(self, request: Request, pk: str) -> core.OperationPostponedResponse:
+        """Store the release's archives, then verify and add it in a task."""
+        namespace: models.TofuNamespace = self.get_object()
+        repository = _upload_repository(namespace)
+        serializer = serializers.ProviderReleaseSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        release: ReleaseFiles = serializer.validated_data["release"]
+        small: dict[str, bytes] = serializer.validated_data["small"]
+        uploads: dict[str, UploadedFile] = serializer.validated_data["archives"]
+
+        existing = models.ProviderVersion.objects.filter(
+            hostname=settings.TOFU_REGISTRY_HOSTNAME,
+            namespace=namespace.name,
+            provider_type=release.provider_type,
+            version=release.version,
+            _pulp_domain=get_domain(),
+        ).first()
+        if existing is not None and bytes(existing.shasums) != small[release.shasums]:
+            raise ReleaseConflict(
+                f"{namespace.name}/{release.provider_type} {release.version} is already published"
+            )
+
+        archives = {
+            str(key): str(_stored_artifact(uploads[name]).pk)
+            for key, name in release.archives.items()
+        }
+        encoded = {name: base64.b64encode(data).decode() for name, data in small.items()}
+        kwargs: tasks.PublishKwargs = {
+            "namespace_pk": str(namespace.pk),
+            "provider_type": release.provider_type,
+            "version": release.version,
+            "shasums": encoded[release.shasums],
+            "signature": encoded[release.signature],
+            "manifest": encoded[release.manifest] if release.manifest else None,
+            "archives": archives,
+        }
+        result = dispatch(
+            tasks.publish_release,
+            exclusive_resources=[repository],
+            shared_resources=[namespace],
+            kwargs=kwargs,
+        )
+        return core.OperationPostponedResponse(result, request)
+
+
+class ReleaseConflict(APIException):
+    """409: the version is already published with different checksums."""
+
+    status_code = 409
+    default_detail = "The provider version is already published."
+    default_code = "conflict"
+
+
+def _upload_repository(namespace: models.TofuNamespace) -> models.TofuRepository:
+    """The repository a release published to ``namespace`` goes into.
+
+    Raises:
+        ValidationError: The namespace's distribution does not accept uploads.
+    """
+    if not settings.TOFU_REGISTRY_HOSTNAME:
+        raise ValidationError(_("Set TOFU_REGISTRY_HOSTNAME to publish providers."))
+    if namespace.content_hostname:
+        raise ValidationError(
+            _("The namespace serves content from {host}; publish to one that does not.").format(
+                host=namespace.content_hostname
+            )
+        )
+    distribution = namespace.distribution
+    if distribution is None or not distribution.allow_uploads or distribution.remote is not None:
+        raise ValidationError(_("The namespace's distribution does not accept uploads."))
+    repository = distribution.repository.cast() if distribution.repository else None
+    if not isinstance(repository, models.TofuRepository):
+        raise ValidationError(_("The namespace's distribution has no tofu repository."))
+    return repository
+
+
+def _stored_artifact(upload: UploadedFile) -> Artifact:
+    """The artifact holding ``upload``, reusing one with the same digest.
+
+    Follows pulpcore's ``SingleArtifactContentUploadViewSet.init_content_data``.
+    """
+    artifact = Artifact.init_and_validate(upload)
+    domain = get_domain()
+    try:
+        existing = Artifact.objects.get(sha256=artifact.sha256, pulp_domain=domain)
+    except Artifact.DoesNotExist:
+        existing = None
+    if existing is not None and existing.pulp_domain.get_storage().exists(existing.file.name):
+        existing.touch()
+        return existing
+    if existing is not None:
+        existing.file = upload
+        existing.save()
+        return existing
+    try:
+        artifact.save()
+    except IntegrityError:
+        artifact = Artifact.objects.get(sha256=artifact.sha256, pulp_domain=domain)
+        artifact.touch()
+    return artifact

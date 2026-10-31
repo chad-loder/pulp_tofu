@@ -187,6 +187,12 @@ _provider_types = itertools.count()
 
 
 @pytest.fixture
+def provider_type() -> str:
+    """A provider type the fake registry serves and no other test uses."""
+    return PROVIDER_TYPES[next(_provider_types)]
+
+
+@pytest.fixture
 def mirror(
     tofu_bindings: Any,
     monitor_task: Callable[[str], Any],

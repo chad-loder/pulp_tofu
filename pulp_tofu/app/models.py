@@ -5,6 +5,7 @@ from logging import getLogger
 from typing import TYPE_CHECKING, Literal, TypedDict, cast, override
 
 from aiohttp import web
+from django.apps import apps
 from django.conf import settings
 from django.db import models
 from yarl import URL
@@ -326,6 +327,10 @@ class TofuDistribution(Distribution):
 
     TYPE = "tofu"  # type: ignore[assignment]
 
+    # Namespaces served by this distribution accept published releases into its
+    # repository. A distribution with a remote refuses uploads.
+    allow_uploads = models.BooleanField(default=False)
+
     def mirror_url(self) -> URL:
         """The network mirror's URL, ending in ``/``; relative when CONTENT_ORIGIN is unset.
 
@@ -359,6 +364,7 @@ class TofuNamespace(BaseModel):
     ``content_hostname`` is the origin hostname of the content served; empty means
     content published to this Pulp, whose origin is ``TOFU_REGISTRY_HOSTNAME``. A
     ``private`` namespace answers only callers with ``view_tofunamespace`` on it.
+    Releases published to the namespace must be signed by a key in ``keyring``.
     """
 
     name = models.TextField()
@@ -366,8 +372,23 @@ class TofuNamespace(BaseModel):
     distribution = models.ForeignKey(
         TofuDistribution, null=True, on_delete=models.SET_NULL, related_name="namespaces"
     )
+    # pulpcore's keyring repository; pulpcore.plugin does not export the model.
+    keyring = models.ForeignKey(
+        "core.OpenPGPKeyring", null=True, on_delete=models.SET_NULL, related_name="tofu_namespaces"
+    )
     content_hostname = models.TextField(blank=True, default="")
     private = models.BooleanField(default=False)
+
+    def armored_keys(self) -> list[str]:
+        """The ASCII-armored public keys in the keyring's latest version."""
+        if self.keyring is None:
+            return []
+        public_key = apps.get_model("core", "OpenPGPPublicKey")
+        version = self.keyring.latest_version()
+        return [
+            key.represent(repository_version=version)
+            for key in public_key.objects.filter(pk__in=version.content)
+        ]
 
     class Meta:
         default_related_name = "%(app_label)s_%(model_name)s"
