@@ -1,9 +1,14 @@
-"""Sync: fetch chosen providers from a remote into a new repository version."""
+"""Sync: fetch chosen providers and modules from a remote into a new repository version."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass
-from typing import TypedDict, Unpack, override
+from pathlib import Path
+from typing import TypedDict, Unpack, assert_never, override
+from uuid import uuid4
+
+from yarl import URL
 
 from pulpcore.plugin.exceptions import SyncError
 from pulpcore.plugin.models import Artifact, ProgressReport
@@ -13,13 +18,28 @@ from pulpcore.plugin.stages import (
     DeclarativeVersion,
     Stage,
 )
+from pulpcore.plugin.util import get_domain
 
 from pulp_tofu.app.models import (
     ArchiveRecord,
+    ModuleVersion,
     ProviderPackage,
     ProviderVersion,
     TofuRemote,
     TofuRepository,
+)
+from pulp_tofu.app.modules import (
+    MAX_ARCHIVE_BYTES,
+    ArchiveSource,
+    GitSource,
+    ModuleSource,
+    ModuleSourceError,
+    checkout,
+    git_environment,
+    pack,
+    parse_location,
+    unpack,
+    workspace,
 )
 from pulp_tofu.app.protocol import (
     Platform,
@@ -46,31 +66,44 @@ class ProviderSelection(TypedDict):
     latest: int
 
 
+class ModuleSelection(TypedDict):
+    """One module to sync. ``latest`` counts releases when ``versions`` is empty."""
+
+    namespace: str
+    name: str
+    system: str
+    versions: list[str]
+    latest: int
+
+
 class SyncKwargs(TypedDict):
     """The sync task's keyword arguments, as the viewset dispatches them."""
 
     remote_pk: str
     repository_pk: str
     providers: list[ProviderSelection]
+    modules: list[ModuleSelection]
     platforms: list[str]
     mirror: bool
 
 
 def synchronize(**kwargs: Unpack[SyncKwargs]) -> None:
-    """Create a repository version holding the selected providers.
+    """Create a repository version holding the selected providers and modules.
 
-    An empty ``versions`` selects the provider's ``latest`` releases; an empty
-    ``platforms`` selects every platform. Archives download now under the ``immediate``
-    policy and on first request otherwise.
+    An empty ``versions`` selects the ``latest`` releases; an empty ``platforms``
+    selects every platform. Provider archives download now under the ``immediate``
+    policy and on first request otherwise. Module sources are always fetched now, since
+    Pulp packs them.
     """
     remote = TofuRemote.objects.get(pk=kwargs["remote_pk"])
     repository = TofuRepository.objects.get(pk=kwargs["repository_pk"])
     providers = [_selection(raw) for raw in kwargs["providers"]]
+    modules = [_module_selection(raw) for raw in kwargs.get("modules", [])]
     platforms = frozenset(
         p.key for raw in kwargs["platforms"] if (p := Platform.from_key(raw)) is not None
     )
     mirror = kwargs["mirror"]
-    first_stage = ProviderStage(remote, providers, platforms)
+    first_stage = RegistryStage(remote, providers, modules, platforms)
     version = DeclarativeVersion(first_stage, repository, mirror=mirror).create()
     if version is None:
         return
@@ -96,24 +129,49 @@ def _selection(raw: object) -> ProviderSelection:
     return {"namespace": namespace, "type": provider_type, "versions": versions, "latest": latest}
 
 
+def _module_selection(raw: object) -> ModuleSelection:
+    """Check one module selection from the task's JSON-deserialized kwargs."""
+    if not isinstance(raw, dict):
+        raise SyncError("a module selection is not an object")
+    namespace, name, system = raw.get("namespace"), raw.get("name"), raw.get("system")
+    versions, latest = raw.get("versions", []), raw.get("latest", 1)
+    if not (isinstance(namespace, str) and isinstance(name, str) and isinstance(system, str)):
+        raise SyncError("a module selection lacks namespace, name or system")
+    label = f"{namespace}/{name}/{system}"
+    if not (isinstance(versions, list) and all(isinstance(v, str) for v in versions)):
+        raise SyncError(f"{label}: versions must be strings")
+    if not isinstance(latest, int) or isinstance(latest, bool) or latest < 1:
+        raise SyncError(f"{label}: latest must be a positive integer")
+    return {
+        "namespace": namespace,
+        "name": name,
+        "system": system,
+        "versions": versions,
+        "latest": latest,
+    }
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Selected:
     address: ProviderAddress
     upstream: UpstreamVersion
 
 
-class ProviderStage(Stage):
-    """Emits each selected provider version and its platform archives."""
+class RegistryStage(Stage):
+    """Emits each selected provider version with its platform archives, then each
+    selected module version with its package."""
 
     def __init__(
         self,
         remote: TofuRemote,
         providers: list[ProviderSelection],
+        modules: list[ModuleSelection],
         platforms: frozenset[PlatformKey],
     ) -> None:
         super().__init__()
         self._remote = remote
         self._providers = providers
+        self._modules = modules
         self._platforms = platforms
 
     @override
@@ -128,6 +186,83 @@ class ProviderStage(Stage):
             for item in selected:
                 await self._emit(client, item)
                 await progress.aincrement()
+        if not self._modules:
+            return
+        environment = git_environment(self._remote.ca_cert, _proxy_with_credentials(self._remote))
+        async with ProgressReport(
+            message="Packing module versions", code="sync.packing.module_versions"
+        ) as progress:
+            for wanted in self._modules:
+                async for version in self._module_versions(client, wanted):
+                    await self._emit_module(client, wanted, version, environment)
+                    await progress.aincrement()
+
+    async def _module_versions(
+        self, client: RegistryClient, wanted: ModuleSelection
+    ) -> AsyncGenerator[str]:
+        label = f"{self._remote.hostname}/{wanted['namespace']}/{wanted['name']}/{wanted['system']}"
+        try:
+            available = await client.module_versions(
+                wanted["namespace"], wanted["name"], wanted["system"]
+            )
+        except UpstreamError as exc:
+            raise SyncError(f"{label}: {exc}") from exc
+        versions = wanted["versions"] or latest_releases(available, wanted["latest"])
+        if not versions:
+            raise SyncError(f"{label} has no release")
+        missing = [v for v in versions if v not in available]
+        if missing:
+            raise SyncError(f"{label} has no version {', '.join(missing)}")
+        for version in versions:
+            yield version
+
+    async def _emit_module(
+        self,
+        client: RegistryClient,
+        wanted: ModuleSelection,
+        version: str,
+        environment: dict[str, str],
+    ) -> None:
+        remote = self._remote
+        key = {
+            "hostname": remote.hostname,
+            "namespace": wanted["namespace"],
+            "name": wanted["name"],
+            "system": wanted["system"],
+            "version": version,
+        }
+        label = (
+            f"{remote.hostname}/{wanted['namespace']}/{wanted['name']}/{wanted['system']} {version}"
+        )
+        stored = await ModuleVersion.objects.filter(**key, _pulp_domain=get_domain()).afirst()
+        if stored is not None:
+            # QueryExistingContents resolves this to the stored unit; nothing is fetched.
+            unit = ModuleVersion(**key, sha256=stored.sha256, size=stored.size)
+            await self.put(DeclarativeContent(content=unit))
+            return
+        try:
+            location, base = await client.module_location(
+                wanted["namespace"], wanted["name"], wanted["system"], version
+            )
+            source = parse_location(location, base)
+            data = None
+            if isinstance(source, ArchiveSource):
+                data = await client.fetch_bytes(source.url, max_bytes=MAX_ARCHIVE_BYTES)
+            # The package stays in the task's working directory until ArtifactSaver moves it.
+            package = Path(f"{uuid4()}.tar.gz").resolve()
+            await asyncio.to_thread(_build_package, source, data, environment, package)
+        except (UpstreamError, ModuleSourceError) as exc:
+            raise SyncError(f"{label}: {exc}") from exc
+        artifact = Artifact.init_and_validate(str(package))
+        unit = ModuleVersion(**key, sha256=artifact.sha256, size=artifact.size)
+        d_artifact = DeclarativeArtifact(
+            artifact=artifact,
+            url=location,
+            relative_path=unit.relative_path,
+            remote=remote,
+            deferred_download=False,
+        )
+        await self.put(DeclarativeContent(content=unit, d_artifacts=[d_artifact]))
 
     async def _select(self, client: RegistryClient) -> AsyncGenerator[_Selected]:
         remote = self._remote
@@ -192,6 +327,31 @@ class ProviderStage(Stage):
                 deferred_download=remote.download_policy != "immediate",
             )
             await self.put(DeclarativeContent(content=package, d_artifacts=[artifact]))
+
+
+def _build_package(
+    source: ModuleSource, data: bytes | None, environment: dict[str, str], package: Path
+) -> None:
+    """Fetch or unpack ``source`` in a scratch directory and pack it to ``package``."""
+    with workspace() as workdir:
+        match source:
+            case GitSource():
+                module_dir = checkout(source, workdir, environment)
+            case ArchiveSource():
+                module_dir = unpack(source, data or b"", workdir)
+            case _:
+                assert_never(source)
+        pack(module_dir, package)
+
+
+def _proxy_with_credentials(remote: TofuRemote) -> str | None:
+    """The remote's proxy URL with its credentials, for git's environment only."""
+    if not remote.proxy_url:
+        return None
+    proxy = URL(remote.proxy_url)
+    if remote.proxy_username:
+        proxy = proxy.with_user(remote.proxy_username).with_password(remote.proxy_password)
+    return str(proxy)
 
 
 def _wanted_archives(

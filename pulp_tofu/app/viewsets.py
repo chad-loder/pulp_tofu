@@ -223,6 +223,16 @@ class TofuRepositoryViewSet(core.RepositoryViewSet, ModifyRepositoryActionMixin,
                 }
                 for p in data["providers"]
             ],
+            "modules": [
+                {
+                    "namespace": str(m["namespace"]),
+                    "name": str(m["name"]),
+                    "system": str(m["system"]),
+                    "versions": [str(v) for v in m["versions"]],
+                    "latest": int(m["latest"]),
+                }
+                for m in data["modules"]
+            ],
             "platforms": [str(p) for p in data["platforms"]],
             "mirror": bool(data["mirror"]),
         }

@@ -55,6 +55,7 @@ class _Throttler(Protocol):
 
 DISCOVERY_PATH = ".well-known/terraform.json"
 PROVIDERS_SERVICE = "providers.v1"
+MODULES_SERVICE = "modules.v1"
 
 MAX_METADATA_BYTES = 16 * 1024 * 1024
 # A discovery document lists a few service URLs.
@@ -120,13 +121,46 @@ class DownloadInfo:
     packages: Mapping[PlatformKey, ReportedPackage]
 
 
-def parse_discovery(document: object, base_url: URL) -> URL:
-    """Return the absolute ``providers.v1`` base URL from a discovery document."""
+def parse_discovery(document: object, base_url: URL, service: str = PROVIDERS_SERVICE) -> URL:
+    """Return the absolute base URL of ``service`` from a discovery document."""
     services = _object(document, "discovery document")
-    value = services.get(PROVIDERS_SERVICE)
+    value = services.get(service)
     if not isinstance(value, str) or not value:
-        raise UpstreamError("the registry does not offer providers.v1")
+        raise UpstreamError(f"the registry does not offer {service}")
     return URL(_https_url(base_url, value))
+
+
+def parse_module_versions(document: object) -> list[str]:
+    """The version strings of a module ``versions`` response's first module."""
+    modules = _list(_object(document, "module versions response").get("modules"), "modules")
+    if not modules:
+        return []
+    entries = _list(_object(modules[0], "modules entry").get("versions"), "versions")
+    return [
+        version
+        for raw in entries
+        if isinstance(version := _object(raw, "versions entry").get("version"), str)
+    ]
+
+
+def parse_module_location(status: int, headers: Mapping[str, str], body: bytes) -> str:
+    """A module ``download`` answer's location: JSON ``location``, else ``X-Terraform-Get``.
+
+    OpenTofu reads the body first and falls back to the header when the body is empty
+    or names no location.
+    """
+    if status == 200 and body.strip():
+        try:
+            document: object = json.loads(body)
+        except ValueError as exc:
+            raise UpstreamError("module download response is not JSON") from exc
+        location = _object(document, "module download response").get("location")
+        if isinstance(location, str) and location:
+            return location
+    header = headers.get("X-Terraform-Get")
+    if not header:
+        raise UpstreamError("module download response names no location")
+    return header
 
 
 def parse_versions(document: object) -> list[UpstreamVersion]:
@@ -203,7 +237,8 @@ class _Session:
     created_at: float = field(default_factory=time.monotonic)
     leases: int = 0
     retired: bool = False
-    providers_url: URL | None = None
+    # Service base URLs found by discovery, keyed by service name.
+    services: dict[str, URL] = field(default_factory=dict[str, URL])
 
 
 class SessionPool:
@@ -328,15 +363,44 @@ class RegistryClient:
 
     async def providers_url(self) -> URL:
         """Resolve the registry's ``providers.v1`` base URL by service discovery, once."""
+        return await self._service_url(PROVIDERS_SERVICE)
+
+    async def _service_url(self, service: str) -> URL:
         async with POOL.lease(self._remote) as session:
-            known = session.providers_url
+            known = session.services.get(service)
         if known is not None:
             return known
         discovery = URL(self._remote.url).join(URL(DISCOVERY_PATH))
         document = await self.fetch_json(discovery, max_bytes=MAX_DISCOVERY_BYTES)
+        found = parse_discovery(document, discovery, service)
         async with POOL.lease(self._remote) as session:
-            session.providers_url = parse_discovery(document, discovery)
-            return session.providers_url
+            session.services[service] = found
+        return found
+
+    async def module_versions(self, namespace: str, name: str, system: str) -> list[str]:
+        url = await self._module_url(namespace, name, system, "versions")
+        return parse_module_versions(await self.fetch_json(url))
+
+    async def module_location(
+        self, namespace: str, name: str, system: str, version: str
+    ) -> tuple[str, URL]:
+        """A module version's go-getter location, and the URL relative locations resolve
+        against. Not cached: locations may be signed and short-lived.
+
+        Raises:
+            UpstreamNotFound: The registry has no such module version.
+            UpstreamError: The answer names no location.
+        """
+        url = await self._module_url(namespace, name, system, version, "download")
+        status, headers, body = await self._fetch_with_retries(str(url), {}, MAX_METADATA_BYTES)
+        if status == 404:
+            raise UpstreamNotFound(str(url))
+        return parse_module_location(status, headers, body), url
+
+    async def _module_url(self, *segments: str) -> URL:
+        if not all(_is_segment(segment) for segment in segments):
+            raise UpstreamNotFound("/".join(segments))
+        return (await self._service_url(MODULES_SERVICE)).joinpath(*segments)
 
     async def versions(self, address: ProviderAddress) -> list[UpstreamVersion]:
         url = await self._provider_url(address.namespace, address.type, "versions")
@@ -398,6 +462,8 @@ class RegistryClient:
                 return _answer(entry, url)
             _CACHE.discard(key)
             return await self._fetch_cached(key, url, max_bytes)
+        if status == 204:
+            raise UpstreamError(f"{url} answered 204 where a document was expected")
         if status == 404:
             storable, fresh_until = freshness(
                 headers, now, default=NEGATIVE_TTL, ceiling=min(ceiling, NEGATIVE_TTL)
@@ -444,9 +510,10 @@ class RegistryClient:
     async def _fetch_once(
         self, url: str, conditional: Mapping[str, str], max_bytes: int
     ) -> "_Answer":
-        """One request; 200, 304 and 404 return, any other status raises.
+        """One request; 200, 204, 304 and 404 return, any other status raises.
 
         Other 2xx answers are refused: a 206 or 203 to a plain GET is not the document.
+        204 is how a module download answers with only ``X-Terraform-Get``.
         """
         remote = self._remote
         timeout = ClientTimeout(
@@ -470,6 +537,8 @@ class RegistryClient:
                     return 304, headers, b""
                 if response.status == 404:
                     return 404, headers, b""
+                if response.status == 204:
+                    return 204, headers, b""
                 response.raise_for_status()
                 if response.status != 200:
                     raise UpstreamError(f"{url} answered {response.status}, not 200")
@@ -490,7 +559,7 @@ def _answer(entry: CacheEntry, url: str) -> bytes:
     return entry.body
 
 
-type _Answer = tuple[Literal[200, 304, 404], TransportHeaders, bytes]
+type _Answer = tuple[Literal[200, 204, 304, 404], TransportHeaders, bytes]
 
 _FETCHES: SingleFlight[bytes] = SingleFlight()
 _CACHE = HttpCache()
