@@ -5,10 +5,10 @@
     pulpproject.org. Its API may change between releases. See
     [Beta Status](site:pulp_tofu/docs/user/learn/tech-preview/).
 
-The `tofu` plugin lets OpenTofu users run `tofu init` against your Pulp instead of the
-public registry. Providers and modules come from Pulp, keep installing when the
-upstream registry is slow or down, and are checked against their publisher's signature
-before Pulp serves them. You can also publish your own providers and modules to Pulp.
+With the `tofu` plugin, `tofu init` installs providers and modules from your Pulp
+instead of the public registry. Installs keep working when the registry is slow or
+down, and Pulp checks each provider against its publisher's signature before serving
+it. You can also publish your own providers and modules to your Pulp.
 
 It is a plugin for [Pulp](site:/) and assumes some familiarity with the
 [pulpcore documentation](site:pulpcore/).
