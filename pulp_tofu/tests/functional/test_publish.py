@@ -1,25 +1,20 @@
 import base64
 import hashlib
-import io
 import json
 import secrets
-import ssl
-import tarfile
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any
 
 import pytest
 from yarl import URL
 
-from pulpcore.client.pulp_tofu import ApiClient, Configuration, PulpTofuNamespacesApi
 from pulpcore.client.pulp_tofu.exceptions import ApiException
 from pulpcore.tests.functional.utils import PulpTaskError
 
 from pulp_tofu.app.signing import verify_sha256sums
 
-from .conftest import E2E, PULP_URL, fetch
+from .conftest import PULP_URL, Publisher, fetch, module_package, release_files, tls_context
 from .fake_registry import FakeRegistry, Release, signed_release
 
 pytestmark = pytest.mark.parallel
@@ -27,117 +22,10 @@ pytestmark = pytest.mark.parallel
 REGISTRY = "/tofu/v1/providers"
 
 
-@dataclass
-class Publisher:
-    """A namespace that accepts uploads, signed by the fake registry's key."""
-
-    bindings: Any
-    monitor_task: Callable[[str], Any]
-    namespace: Any
-    repository: Any
-    distribution: Any
-
-    def publish(self, files: list[tuple[str, bytes]], token: str | None = None) -> Any:  # noqa: ANN401
-        if token is None:
-            response = self.bindings.PulpTofuNamespacesApi.publish(
-                self.namespace.pulp_href, files=files
-            )
-        else:
-            # A client with no basic credentials, so the bearer token is the only one.
-            configuration = Configuration(host=PULP_URL)
-            configuration.ssl_ca_cert = str(E2E / "certs" / "ca.crt")
-            configuration.safe_chars_for_path_param = "/"
-            api = PulpTofuNamespacesApi(ApiClient(configuration))
-            wire: list[bytes | str | tuple[str, bytes]] = [*files]
-            response = api.publish(
-                self.namespace.pulp_href,
-                files=wire,
-                _headers={"Authorization": f"Bearer {token}"},
-            )
-        return self.monitor_task(response.task)
-
-    def publish_module(self, version: str, package: bytes, name: str = "vpc") -> Any:  # noqa: ANN401
-        response = self.bindings.PulpTofuNamespacesApi.publish_module(
-            self.namespace.pulp_href,
-            name=name,
-            system="aws",
-            version=version,
-            file=("vpc.tar.gz", package),
-        )
-        return self.monitor_task(response.task)
-
-
-def _module_package(*entries: tuple[str, bytes]) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for name, data in entries:
-            member = tarfile.TarInfo(name)
-            member.size = len(data)
-            tar.addfile(member, io.BytesIO(data))
-    return buffer.getvalue()
-
-
-@pytest.fixture
-def publisher(
-    tofu_bindings: Any,
-    pulpcore_bindings: Any,
-    monitor_task: Callable[[str], Any],
-    gen_object_with_cleanup: Callable[..., Any],
-    tofu_repository_factory: Callable[..., Any],
-    tofu_distribution_factory: Callable[..., Any],
-    tofu_namespace_factory: Callable[..., Any],
-    upstream: tuple[FakeRegistry, int, str],
-) -> Publisher:
-    registry, _, _ = upstream
-    keyring = gen_object_with_cleanup(
-        pulpcore_bindings.RepositoriesOpenpgpKeyringApi, {"name": secrets.token_hex(8)}
-    )
-    response = pulpcore_bindings.ContentOpenpgpPublickeyApi.create(
-        file=("key.asc", registry.armored_key.encode()), repository=keyring.pulp_href
-    )
-    monitor_task(response.task)
-    repository = tofu_repository_factory()
-    distribution = tofu_distribution_factory(repository=repository, allow_uploads=True)
-    namespace = tofu_namespace_factory(
-        f"pub{secrets.token_hex(4)}", distribution, keyring=keyring.pulp_href
-    )
-    return Publisher(
-        bindings=tofu_bindings,
-        monitor_task=monitor_task,
-        namespace=namespace,
-        repository=repository,
-        distribution=distribution,
-    )
-
-
-def _files(ptype: str, version: str, release: Release) -> list[tuple[str, bytes]]:
-    prefix = f"terraform-provider-{ptype}_{version}"
-    manifest = json.dumps({"version": 1, "metadata": {"protocol_versions": ["6.0"]}})
-    return [
-        *release.archives.items(),
-        (f"{prefix}_SHA256SUMS", release.sums),
-        (f"{prefix}_SHA256SUMS.sig", release.signature),
-        (f"{prefix}_manifest.json", manifest.encode()),
-    ]
-
-
-@pytest.fixture
-def registry(upstream: tuple[FakeRegistry, int, str]) -> FakeRegistry:
-    return upstream[0]
-
-
-@pytest.fixture
-def release(registry: FakeRegistry, provider_type: str) -> Release:
-    """Version 1.0.0 of the test's provider, signed by the namespace's key."""
-    found = registry.release(provider_type, "1.0.0")
-    assert found is not None
-    return found
-
-
 def test_published_release_is_served_by_the_registry(
     publisher: Publisher, release: Release, provider_type: str
 ) -> None:
-    publisher.publish(_files(provider_type, "1.0.0", release))
+    publisher.publish(release_files(provider_type, "1.0.0", release))
 
     base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
     versions = json.loads(fetch(f"{base}/versions").body)["versions"]
@@ -152,28 +40,30 @@ def test_published_release_is_served_by_the_registry(
     assert json.loads(fetch(mixed).body)["versions"] == versions
 
     # Publishing the same release again changes nothing.
-    publisher.publish(_files(provider_type, "1.0.0", release))
+    publisher.publish(release_files(provider_type, "1.0.0", release))
     assert len(json.loads(fetch(f"{base}/versions").body)["versions"]) == 1
 
 
 def test_a_published_version_cannot_change(
     publisher: Publisher, registry: FakeRegistry, release: Release, provider_type: str
 ) -> None:
-    publisher.publish(_files(provider_type, "1.0.0", release))
+    publisher.publish(release_files(provider_type, "1.0.0", release))
 
     [name, *_] = release.archives
     changed = signed_release(
         registry.key, {**release.archives, name: release.archives[name] + b"\0"}
     )
     with pytest.raises(ApiException) as error:
-        publisher.publish(_files(provider_type, "1.0.0", changed))
+        publisher.publish(release_files(provider_type, "1.0.0", changed))
     assert error.value.status == 409
 
 
 def test_release_signed_by_another_key_is_refused(
     publisher: Publisher, registry: FakeRegistry, release: Release, provider_type: str
 ) -> None:
-    files = _files(provider_type, "1.0.0", signed_release(registry.other_key, release.archives))
+    files = release_files(
+        provider_type, "1.0.0", signed_release(registry.other_key, release.archives)
+    )
     with pytest.raises(PulpTaskError) as error:
         publisher.publish(files)
     assert "does not verify" in error.value.task.error["description"]
@@ -187,7 +77,7 @@ def test_archives_must_match_the_signed_checksums(
     [name, *_] = release.archives
     tampered = Release({**release.archives, name: b"tampered"}, release.sums, release.signature)
     with pytest.raises(PulpTaskError) as error:
-        publisher.publish(_files(provider_type, "1.0.0", tampered))
+        publisher.publish(release_files(provider_type, "1.0.0", tampered))
     assert "does not match its SHA256SUMS digest" in error.value.task.error["description"]
 
 
@@ -207,7 +97,7 @@ def test_release_job_publishes_with_a_publish_token(
     tofu_bindings: Any,
     gen_object_with_cleanup: Callable[..., Any],
 ) -> None:
-    files = _files(provider_type, "1.0.0", release)
+    files = release_files(provider_type, "1.0.0", release)
 
     def token(scope: str) -> str:
         body = {"name": scope, "scope": scope, "namespaces": [publisher.namespace.pulp_href]}
@@ -233,7 +123,7 @@ def test_a_token_publishes_only_what_its_user_may(
     with reader:
         token = tofu_bindings.PulpTofuTokensApi.create(body)
     with pytest.raises(ApiException) as error:
-        publisher.publish(_files(provider_type, "1.0.0", release), token=str(token.token))
+        publisher.publish(release_files(provider_type, "1.0.0", release), token=str(token.token))
     assert error.value.status == 403
 
 
@@ -247,7 +137,7 @@ def test_update_token_publishes_only_versions_of_existing_providers(
 ) -> None:
     body = {"name": "ci", "scope": "update", "namespaces": [publisher.namespace.pulp_href]}
     update = str(gen_object_with_cleanup(tofu_bindings.PulpTofuTokensApi, body).token)
-    first = _files(provider_type, "1.0.0", release)
+    first = release_files(provider_type, "1.0.0", release)
     with pytest.raises(ApiException) as error:
         publisher.publish(first, token=update)
     assert error.value.status == 403
@@ -255,7 +145,7 @@ def test_update_token_publishes_only_versions_of_existing_providers(
     publisher.publish(first)
     later = registry.release(provider_type, "1.1.0")
     assert later is not None
-    publisher.publish(_files(provider_type, "1.1.0", later), token=update)
+    publisher.publish(release_files(provider_type, "1.1.0", later), token=update)
     versions = json.loads(
         fetch(f"{REGISTRY}/{publisher.namespace.name}/{provider_type}/versions").body
     )
@@ -266,7 +156,7 @@ MODULES = "/tofu/v1/modules"
 
 
 def test_published_module_is_served_by_the_registry(publisher: Publisher) -> None:
-    package = _module_package(("main.tf", b'variable "cidr" {}\n'))
+    package = module_package(("main.tf", b'variable "cidr" {}\n'))
     publisher.publish_module("1.0.0", package)
     publisher.publish_module("1.0.0", package)
 
@@ -280,30 +170,28 @@ def test_published_module_is_served_by_the_registry(publisher: Publisher) -> Non
 
 
 def test_a_published_module_version_cannot_change(publisher: Publisher) -> None:
-    publisher.publish_module("1.0.0", _module_package(("main.tf", b"# one\n")))
+    publisher.publish_module("1.0.0", module_package(("main.tf", b"# one\n")))
     with pytest.raises(ApiException) as error:
-        publisher.publish_module("1.0.0", _module_package(("main.tf", b"# two\n")))
+        publisher.publish_module("1.0.0", module_package(("main.tf", b"# two\n")))
     assert error.value.status == 409
 
 
 def test_module_names_ignore_case(publisher: Publisher) -> None:
-    publisher.publish_module("1.0.0", _module_package(("main.tf", b"# vpc\n")), name="Vpc")
+    publisher.publish_module("1.0.0", module_package(("main.tf", b"# vpc\n")), name="Vpc")
 
     namespace = publisher.namespace.name
     for path in (f"{namespace}/Vpc/aws", f"{namespace.upper()}/vpc/AWS"):
         listing = json.loads(fetch(f"{MODULES}/{path}/versions").body)
         assert listing == {"modules": [{"versions": [{"version": "1.0.0"}]}]}
     with pytest.raises(ApiException) as error:
-        publisher.publish_module(
-            "1.1.0", _module_package(("main.tf", b"# lookalike\n")), name="vpc"
-        )
+        publisher.publish_module("1.1.0", module_package(("main.tf", b"# lookalike\n")), name="vpc")
     assert error.value.status == 409
     assert "differs only in case" in str(error.value.body)
 
 
 def test_module_package_escaping_its_directory_is_refused(publisher: Publisher) -> None:
     with pytest.raises(PulpTaskError) as error:
-        publisher.publish_module("1.0.0", _module_package(("../main.tf", b"# escape\n")))
+        publisher.publish_module("1.0.0", module_package(("../main.tf", b"# escape\n")))
     assert "leaves the module directory" in error.value.task.error["description"]
 
 
@@ -311,11 +199,10 @@ def test_unsigned_release_is_signed_by_the_namespace_signing_service(
     publisher: Publisher,
     release: Release,
     provider_type: str,
-    pulpcore_bindings: Any,
+    tofu_signing_service: Any,
     tofu_namespace_factory: Callable[..., Any],
 ) -> None:
-    # dev/e2e/run.sh registers this service.
-    [service] = pulpcore_bindings.SigningServicesApi.list(name="tofu-e2e").results
+    service = tofu_signing_service
     publisher.namespace = tofu_namespace_factory(
         f"signed{secrets.token_hex(4)}",
         publisher.distribution,
@@ -348,7 +235,9 @@ def test_release_published_from_uploaded_artifacts(
             return str(found.results[0].pulp_href)
         return str(pulpcore_bindings.ArtifactsApi.create(file=(name, data)).pulp_href)
 
-    hrefs = {name: artifact(name, data) for name, data in _files(provider_type, "1.0.0", release)}
+    hrefs = {
+        name: artifact(name, data) for name, data in release_files(provider_type, "1.0.0", release)
+    }
     login = f"{bindings_cfg.username}:{bindings_cfg.password}".encode()
     request = urllib.request.Request(
         f"{PULP_URL}{publisher.namespace.pulp_href}publish/",
@@ -359,8 +248,7 @@ def test_release_published_from_uploaded_artifacts(
         },
         method="POST",
     )
-    context = ssl.create_default_context(cafile=str(E2E / "certs" / "ca.crt"))
-    with urllib.request.urlopen(request, context=context, timeout=60) as response:
+    with urllib.request.urlopen(request, context=tls_context(), timeout=60) as response:
         publisher.monitor_task(json.loads(response.read())["task"])
     base = f"{REGISTRY}/{publisher.namespace.name}/{provider_type}"
     assert fetch(f"{base}/versions").status == 200

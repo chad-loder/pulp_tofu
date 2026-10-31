@@ -57,10 +57,8 @@ lint = [
 ]
 test = [
   "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
   "pytest-xdist==3.8.0",
   "pytest-timeout==2.5.0",
-  "aioresponses==0.7.9",
 ]
 
 [tool.uv]
@@ -126,12 +124,11 @@ warn_return_any = false
 module = ["pulp_tofu.tests.functional.*"]
 disallow_untyped_defs = false
 disallow_any_generics = false
+disallow_untyped_calls = false
 
 [tool.pytest.ini_options]
 addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib"]
 xfail_strict = true
-asyncio_mode = "strict"
-asyncio_default_fixture_loop_scope = "function"
 
 [tool.setuptools.packages.find]
 where = ["."]

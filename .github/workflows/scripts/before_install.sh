@@ -44,7 +44,7 @@ legacy_component_name: "pulp_tofu"
 component_name: "tofu"
 component_version: "${COMPONENT_VERSION}"
 pulp_env: {}
-pulp_settings: {"api_root": "/pulp/"}
+pulp_settings: {"api_root": "/pulp/", "tofu_registry_enabled": true, "tofu_registry_hostname": "pulp.test"}
 pulp_scheme: "https"
 image:
   name: "pulp"

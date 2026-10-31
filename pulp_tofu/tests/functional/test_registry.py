@@ -64,7 +64,7 @@ def test_registry_serves_versions_and_signed_downloads(
     [key] = document["signing_keys"]["gpg_public_keys"]
     assert key["ascii_armor"].strip() == mirror.registry.armored_key.strip()
 
-    # OpenTofu fetches these from the content app; CONTENT_ORIGIN is the e2e proxy.
+    # OpenTofu fetches these from the content app.
     def content(url: str) -> bytes:
         response = fetch(URL(url).path)
         assert response.status == 200, (url, response)
