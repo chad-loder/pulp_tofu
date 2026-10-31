@@ -40,3 +40,35 @@ curl -u admin --json '{
 ```
 
 That distribution answers only from the repository and never contacts the registry.
+
+## Modules
+
+!!! warning "Tech preview"
+    Module sync is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
+
+A sync can also fetch modules. Registries do not host module packages: their download
+answer points at the source, usually a git repository at a commit. Pulp checks that
+source out, packs it, and serves the package itself:
+
+```bash
+curl -u admin --json '{
+  "remote": "<remote pulp_href>",
+  "modules": [{"namespace": "cloudposse", "name": "label", "system": "null", "latest": 2}]
+}' "$PULP/pulp/api/v3/repositories/tofu/tofu/<repository id>/sync/"
+```
+
+Serve them under Pulp's hostname with a namespace whose `content_hostname` is the
+registry's, as for synced providers; OpenTofu then installs
+`pulp.example/cloudposse/label/null`.
+
+| source | supported |
+| --- | --- |
+| `git::https://...` on any host: GitHub, GitLab, Forgejo, Gitea | yes, with `//subdir` and `?ref=` |
+| `github.com/...` and `gitlab.com/...` shorthand | yes |
+| HTTPS `.tar.gz`, `.tgz` or `.zip` archives, or `?archive=` | yes |
+| git over SSH, `s3::`, `gcs::`, `hg::` | no |
+| repositories or archives that need credentials | no |
+
+Git uses the remote's `ca_cert` and proxy settings. Packing is deterministic: the same
+commit always yields the same package digest, so a version already in Pulp is never
+fetched again. Modules are fetched only by sync; there is no module pull-through.
