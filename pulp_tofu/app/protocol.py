@@ -19,6 +19,8 @@ SUPPORTED_PROTOCOL_MAJORS = frozenset({"5", "6"})
 
 # "os_arch", the key the network mirror protocol and registries use for a platform.
 PlatformKey = NewType("PlatformKey", str)
+# A registry hostname as OpenTofu compares them: lowercase, Unicode, port only if not 443.
+RegistryHost = NewType("RegistryHost", str)
 # Go's GOOS and GOARCH values: lowercase letters and digits, never an underscore.
 _PLATFORM_KEY = re.compile(r"^([a-z0-9]+)_([a-z0-9]+)$")
 
@@ -120,7 +122,7 @@ def describe_error(error: BaseException) -> str:
     return type(error).__name__
 
 
-def normalize_hostname(value: str) -> str:
+def normalize_hostname(value: str) -> RegistryHost:
     """A registry hostname as OpenTofu's svchost compares hostnames.
 
     Raises:
@@ -129,7 +131,7 @@ def normalize_hostname(value: str) -> str:
     return registry_host(URL.build(scheme="https", authority=value.strip()))
 
 
-def registry_host(url: URL) -> str:
+def registry_host(url: URL) -> RegistryHost:
     """The hostname OpenTofu writes in addresses for a registry at ``url``.
 
     yarl lowercases the host, gives it in Unicode form and drops a default port; an
@@ -143,7 +145,7 @@ def registry_host(url: URL) -> str:
         raise ValueError(f"{url} has no host")
     if ":" in host:
         host = f"[{host}]"
-    return host if url.explicit_port is None else f"{host}:{url.explicit_port}"
+    return RegistryHost(host if url.explicit_port is None else f"{host}:{url.explicit_port}")
 
 
 def parse_platform_key(key: str) -> Platform | None:

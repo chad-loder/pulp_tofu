@@ -37,7 +37,7 @@ from .models import (
     TofuToken,
 )
 from .permissions import has_any_level_perm
-from .protocol import Platform, normalize_hostname
+from .protocol import Platform, RegistryHost, normalize_hostname
 
 if TYPE_CHECKING:
     from django.contrib.auth.models import AbstractUser, AnonymousUser
@@ -47,7 +47,7 @@ MODULES_SERVICE = "modules.v1"
 CHECKSUMS_SEGMENT = "_checksums"
 
 
-def registry_hostname() -> str | None:
+def registry_hostname() -> RegistryHost | None:
     """``TOFU_REGISTRY_HOSTNAME`` as OpenTofu compares hostnames, or None if unset."""
     hostname = settings.TOFU_REGISTRY_HOSTNAME
     return normalize_hostname(hostname) if isinstance(hostname, str) and hostname else None

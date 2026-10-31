@@ -18,6 +18,7 @@ from pulpcore.plugin.util import get_domain
 
 from . import models
 from .authentication import IssuedToken, issue_token
+from .narrowing import is_dict, is_list
 from .permissions import has_any_level_perm
 from .protocol import (
     Platform,
@@ -563,11 +564,9 @@ class TofuTokenSerializer(platform.ModelSerializer):
     @override
     def create(self, validated_data: dict[str, object]) -> models.TofuToken:
         namespaces = validated_data["namespaces"]
-        if not isinstance(namespaces, list):
+        if not is_list(namespaces):
             raise TypeError("TofuTokenSerializer is not validated")
-        covered = [
-            n for n in cast("list[object]", namespaces) if isinstance(n, models.TofuNamespace)
-        ]
+        covered = [n for n in namespaces if isinstance(n, models.TofuNamespace)]
         issued = issue_token()
         self.context["issued_token"] = issued
         token = models.TofuToken.objects.create(
@@ -622,16 +621,17 @@ class ProviderReleaseSerializer(serializers.Serializer[object]):
     )
 
     def validate_artifacts(self, value: object) -> dict[str, Artifact]:
-        if not isinstance(value, dict):
+        if not is_dict(value):
             raise serializers.ValidationError(_("Expected an object of filename to artifact href."))
-        artifact = platform.RelatedField(
-            view_name="artifacts-detail", queryset=Artifact.objects.all()
-        )
-        artifact.bind("artifacts", self)
-        return {
-            str(name): cast("Artifact", artifact.to_internal_value(str(href)))
-            for name, href in cast("dict[object, object]", value).items()
-        }
+        field = platform.RelatedField(view_name="artifacts-detail", queryset=Artifact.objects.all())
+        field.bind("artifacts", self)
+        resolved: dict[str, Artifact] = {}
+        for name, href in value.items():
+            artifact = field.to_internal_value(str(href))
+            if not isinstance(artifact, Artifact):
+                raise serializers.ValidationError(_("Unknown artifact."))
+            resolved[str(name)] = artifact
+        return resolved
 
     @override
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
@@ -688,14 +688,14 @@ def _release_files(attrs: Mapping[str, object]) -> dict[str, UploadedFile | Arti
     if bool(files) == bool(artifacts):
         raise serializers.ValidationError(_("Send either files or artifacts."))
     by_name: dict[str, UploadedFile | Artifact] = {}
-    if isinstance(files, list):
-        for upload in cast("list[object]", files):
+    if is_list(files):
+        for upload in files:
             if not isinstance(upload, UploadedFile):
                 raise serializers.ValidationError({"files": _("Expected a list of files.")})
             by_name[str(upload.name)] = upload
-    elif isinstance(artifacts, dict):
+    elif is_dict(artifacts):
         domain = get_domain()
-        for name, artifact in cast("dict[object, object]", artifacts).items():
+        for name, artifact in artifacts.items():
             if not isinstance(artifact, Artifact) or artifact.pulp_domain != domain:
                 raise serializers.ValidationError({"artifacts": _("Unknown artifact.")})
             by_name[str(name)] = artifact

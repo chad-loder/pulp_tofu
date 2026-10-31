@@ -37,6 +37,7 @@ from .http_cache import (
     kept_headers,
     monotonic,
 )
+from .narrowing import is_list
 from .protocol import (
     Platform,
     PlatformKey,
@@ -49,8 +50,6 @@ from .retry import is_retryable, retry_delay
 from .signing import ARCHIVE_NAME
 
 if TYPE_CHECKING:
-    from pulpcore.plugin.download import HttpDownloader
-
     from .models import TofuRemote
 
 
@@ -309,11 +308,13 @@ class SessionPool:
     def _open(self, remote: "TofuRemote", loop: asyncio.AbstractEventLoop) -> _Session:
         # pulpcore.plugin.download reads Django settings on import; the parsers above
         # stay importable without them.
-        from pulpcore.plugin.download import DownloaderFactory
+        from pulpcore.plugin.download import DownloaderFactory, HttpDownloader
 
         # The factory builds the session from the remote's TLS, header and timeout
         # settings; a downloader it builds carries the per-request proxy and auth.
-        probe = cast("HttpDownloader", DownloaderFactory(remote).build(remote.url))
+        probe = DownloaderFactory(remote).build(remote.url)
+        if not isinstance(probe, HttpDownloader):
+            raise UpstreamError(f"{display_url(remote.url)} is not an HTTP(S) URL")
         session = _Session(
             stamp=remote.pulp_last_updated,
             loop=loop,
@@ -582,13 +583,9 @@ def _is_segment(value: str) -> bool:
     return bool(value) and "/" not in value and value not in (".", "..")
 
 
-# TypeGuard rather than TypeIs: TypeIs needs Python 3.13. json.loads only makes str keys.
+# json.loads only makes str keys.
 def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
     return isinstance(value, dict)
-
-
-def _is_json_list(value: object) -> TypeGuard[list[object]]:
-    return isinstance(value, list)
 
 
 def _object(value: object, what: str) -> dict[str, object]:
@@ -598,7 +595,7 @@ def _object(value: object, what: str) -> dict[str, object]:
 
 
 def _list(value: object, what: str) -> list[object]:
-    if not _is_json_list(value):
+    if not is_list(value):
         raise UpstreamError(f"{what} is not a JSON list")
     return value
 

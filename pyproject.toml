@@ -72,6 +72,7 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 local_partial_types = true
+disallow_any_explicit = true
 # Local stubs for dependencies that ship none and have none in typeshed.
 mypy_path = "typings"
 enable_error_code = [
@@ -119,12 +120,18 @@ module = [
 disallow_untyped_calls = false
 warn_return_any = false
 
+# pulpcore's downloader passes untyped *args, **kwargs and extra_data through.
+[[tool.mypy.overrides]]
+module = ["pulp_tofu.app.downloaders"]
+disallow_any_explicit = false
+
 # Test code drives untyped pulpcore fixtures and generated bindings.
 [[tool.mypy.overrides]]
-module = ["pulp_tofu.tests.functional.*"]
+module = ["pulp_tofu.tests.functional.*", "pulp_tofu.pytest_plugin"]
 disallow_untyped_defs = false
 disallow_any_generics = false
 disallow_untyped_calls = false
+disallow_any_explicit = false
 
 [tool.pytest.ini_options]
 addopts = ["--strict-markers", "--strict-config", "--import-mode=importlib"]

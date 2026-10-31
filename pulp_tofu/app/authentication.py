@@ -11,10 +11,11 @@ import hmac
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import cast, override
+from typing import override
 
 from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser
+from django.core.exceptions import ImproperlyConfigured
 from django.utils import timezone
 from django.utils.module_loading import import_string
 from rest_framework.authentication import BaseAuthentication, get_authorization_header
@@ -91,12 +92,15 @@ class TofuTokenAuthentication(BaseAuthentication):
 
 def registry_authentication_classes() -> list[type[BaseAuthentication]]:
     """``TOFU_AUTHENTICATION_CLASSES``, then pulpcore's ``DEFAULT_AUTHENTICATION_CLASSES``."""
-    extra = [
-        cast("type[BaseAuthentication]", import_string(path))
-        for path in settings.TOFU_AUTHENTICATION_CLASSES
-    ]
-    defaults = cast("list[type[BaseAuthentication]]", api_settings.DEFAULT_AUTHENTICATION_CLASSES)
-    return [*extra, *defaults]
+    extra: list[object] = [import_string(path) for path in settings.TOFU_AUTHENTICATION_CLASSES]
+    defaults: list[object] = list(api_settings.DEFAULT_AUTHENTICATION_CLASSES)
+    return [_authentication_class(c) for c in (*extra, *defaults)]
+
+
+def _authentication_class(value: object) -> type[BaseAuthentication]:
+    if not (isinstance(value, type) and issubclass(value, BaseAuthentication)):
+        raise ImproperlyConfigured(f"{value!r} is not a DRF authentication class")
+    return value
 
 
 def registry_authenticators() -> list[BaseAuthentication]:

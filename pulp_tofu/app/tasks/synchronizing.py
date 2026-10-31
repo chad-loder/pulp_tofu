@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict, Unpack, assert_never, cast, override
+from typing import TypedDict, Unpack, assert_never, override
 from uuid import uuid4
 
 from yarl import URL
@@ -41,6 +41,7 @@ from pulp_tofu.app.modules import (
     unpack,
     workspace,
 )
+from pulp_tofu.app.narrowing import is_list
 from pulp_tofu.app.protocol import (
     Platform,
     PlatformKey,
@@ -128,13 +129,11 @@ def _selection(raw: object) -> ProviderSelection:
 def _releases(raw: dict[str, object], label: str) -> tuple[list[str], int]:
     """A selection's ``versions`` and ``latest``, checked."""
     versions, latest = raw.get("versions", []), raw.get("latest", 1)
-    if not isinstance(versions, list) or not all(
-        isinstance(v, str) for v in cast("list[object]", versions)
-    ):
+    if not is_list(versions) or not all(isinstance(v, str) for v in versions):
         raise SyncError(f"{label}: versions must be strings")
     if not isinstance(latest, int) or isinstance(latest, bool) or latest < 1:
         raise SyncError(f"{label}: latest must be a positive integer")
-    return [str(v) for v in cast("list[object]", versions)], latest
+    return [str(v) for v in versions], latest
 
 
 def _module_selection(raw: object) -> ModuleSelection:
