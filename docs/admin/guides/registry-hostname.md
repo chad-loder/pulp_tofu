@@ -1,12 +1,8 @@
 # Set the Registry Hostname
 
-!!! warning "Tech preview"
-    The registry is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
-
-OpenTofu finds a registry by fetching `https://<hostname>/.well-known/terraform.json`.
-The discovery document has no path, so each host serves one registry. Inside it,
-namespaces route the requests, as pulp_container routes one `/v2/` API by repository
-path.
+Users write the registry hostname at the start of `source` addresses, as in
+`pulp.example/hashicorp/aws`. Each hostname serves one registry. Namespaces inside it
+keep teams and their providers apart.
 
 ## Turn on the registry
 
@@ -30,15 +26,19 @@ setting.
 
 ## Route the registry
 
-The registry runs in the API workers. The shipped snippets route two locations to them:
+The webserver snippet from
+[Install the Plugin](site:pulp_tofu/docs/admin/guides/install/#configure-the-webserver)
+already routes the registry. Include it in the server block that answers for
+`TOFU_REGISTRY_HOSTNAME`.
 
-- `location = /.well-known/terraform.json`. This exact match wins over any
-  `/.well-known/` prefix block, such as the ACME block in Pulp's container images.
-- `location /tofu/`, the `TOFU_REGISTRY_PATH_PREFIX`. If you change the prefix, change
-  this location with it.
+To check that the registry answers:
 
-Include the nginx snippet in the server block for `TOFU_REGISTRY_HOSTNAME`. For where the
-snippet lives, see [Install the Plugin](site:pulp_tofu/docs/admin/guides/install/).
+```bash
+curl https://pulp.example/.well-known/terraform.json
+```
+
+The response lists `providers.v1` and `modules.v1`. A 404 means the registry is off,
+or the webserver does not route the path to Pulp.
 
 ## Domains
 

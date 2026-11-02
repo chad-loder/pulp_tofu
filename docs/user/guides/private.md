@@ -1,11 +1,8 @@
 # Run a Private Registry
 
-!!! warning "Tech preview"
-    Registry tokens are a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
-
-A private namespace answers registry requests only from users allowed to view it.
-OpenTofu authenticates with a bearer token that it reads from `TF_TOKEN_<hostname>`.
-In the variable name, dots in the hostname become underscores.
+Only users allowed to view a private namespace can install its providers and modules.
+OpenTofu sends a token that it reads from the `TF_TOKEN_<hostname>` environment
+variable. In the variable name, dots in the hostname become underscores.
 
 ## Create a token
 

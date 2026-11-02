@@ -15,25 +15,47 @@ pulpcore-manager migrate tofu
 
 Then restart the API, content and worker processes, so they load the plugin.
 
-## Webserver
+## Configure the webserver
 
-Pulp's content app serves the mirror below `/pulp/tofu/`, so the webserver in front of
-Pulp must route that path to the content app. The package ships snippets for both
-webservers Pulp supports:
+OpenTofu reaches Pulp through the webserver in front of it. The plugin ships a
+ready-made config snippet for nginx and one for Apache. Add the one for your webserver:
 
-- nginx: `pulp_tofu/app/webserver_snippets/nginx.conf`. Include it from the server block
-  that proxies to `pulp-content`. In Pulp's container images, link it into
-  `/etc/nginx/pulp/`.
-- Apache: `pulp_tofu/app/webserver_snippets/apache.conf`.
+=== "nginx"
 
-The nginx snippet turns off response buffering, so archives stream to the client while
-Pulp downloads them. It also proxies over HTTP/1.1. Over HTTP/1.0, an archive download
-that Pulp aborts would reach the client looking complete.
+    1. Print the snippet's path:
 
-The snippets also route the registry to the API workers: `/.well-known/terraform.json`,
-and `/tofu/`, the default `TOFU_REGISTRY_PATH_PREFIX`. Pulp answers these paths only
-with `TOFU_REGISTRY_ENABLED`. See
+        ```bash
+        python3 -c 'import pathlib, pulp_tofu.app as a; print(pathlib.Path(a.__file__).parent / "webserver_snippets/nginx.conf")'
+        ```
+
+    2. Include it in the `server` block that proxies to Pulp. In Pulp's container
+       images, link it into `/etc/nginx/pulp/`, which that block already includes.
+    3. Reload nginx.
+
+=== "Apache"
+
+    1. Print the snippet's path:
+
+        ```bash
+        python3 -c 'import pathlib, pulp_tofu.app as a; print(pathlib.Path(a.__file__).parent / "webserver_snippets/apache.conf")'
+        ```
+
+    2. Include it in the `VirtualHost` that defines `pulp-api` and `pulp-content`.
+    3. Reload Apache.
+
+The snippet also routes the registry, which stays off until you turn it on. See
 [Set the Registry Hostname](site:pulp_tofu/docs/admin/guides/registry-hostname/).
+
+### Write your own webserver config
+
+If you route Pulp with your own config instead of the snippet, it needs these
+locations:
+
+| path | send to | why |
+| --- | --- | --- |
+| `/pulp/tofu/` | content app | Mirror downloads. Turn off response buffering, so OpenTofu receives an archive while Pulp is still fetching it. Proxy over HTTP/1.1: over HTTP/1.0, a download that Pulp aborts reaches OpenTofu looking complete. |
+| `/.well-known/terraform.json` | API | Registry discovery. In nginx, use an exact-match location, so it wins over any `/.well-known/` block, such as the ACME block in Pulp's container images. |
+| `/tofu/` | API | The registry. Change it together with `TOFU_REGISTRY_PATH_PREFIX`. |
 
 ## TLS
 

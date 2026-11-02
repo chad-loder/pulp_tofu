@@ -1,11 +1,7 @@
 # Serve Providers as a Registry
 
-!!! warning "Tech preview"
-    The registry is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
-    Its API may change between releases.
-
-With the registry on, OpenTofu resolves source addresses under Pulp's hostname, and
-users need no CLI configuration:
+With the registry on, users write `source` addresses with Pulp's hostname, and
+`tofu init` installs from Pulp with no CLI configuration on each machine:
 
 ```hcl
 terraform {
@@ -20,9 +16,8 @@ An administrator turns the registry on and sets its hostname. See
 
 ## Create a namespace
 
-A namespace is the middle part of a source address. Each namespace names one
-distribution, and the registry answers for the namespace from that distribution's
-repository.
+A namespace is the middle part of a source address. Each namespace serves the
+providers in one distribution.
 
 Prerequisites:
 

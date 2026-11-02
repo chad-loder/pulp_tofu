@@ -1,12 +1,8 @@
 # Sign Releases with Pulp
 
-!!! warning "Tech preview"
-    Pulp signing is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
-
-A namespace with a signing service accepts provider releases without a signature. Pulp
-signs each release's `SHA256SUMS` with the service's key, so publishers need no key of
-their own. The registry lists the service's public key, and OpenTofu verifies against
-it.
+A namespace with a signing service accepts provider releases without a signature, and
+Pulp signs them. Publishers need no signing key of their own, and OpenTofu still
+verifies every release it installs.
 
 ## Register a service
 

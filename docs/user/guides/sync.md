@@ -68,12 +68,8 @@ registry.
 
 ## Sync modules
 
-!!! warning "Tech preview"
-    Module sync is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
-
-A sync can also fetch modules. Registries do not host module packages themselves. A
-registry's download answer points at the module's source, usually a git repository at
-a commit. Pulp checks the source out, packs it, and serves the package itself.
+A sync can also fetch modules. Pulp downloads each module version from where its
+author hosts it, usually GitHub, keeps a copy, and serves that copy to OpenTofu.
 
 To fetch the two newest versions of `cloudposse/label/null`:
 

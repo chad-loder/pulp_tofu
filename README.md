@@ -8,19 +8,17 @@ A [Pulp](https://pulpproject.org/) plugin that serves OpenTofu providers and mod
 
 Documentation: <https://chad-loder.github.io/pulp_tofu/>
 
-- **Pull-through mirror.** A distribution answers the
-  [provider network mirror protocol](https://opentofu.org/docs/internals/provider-network-mirror-protocol/).
-  On the first request for a provider, Pulp fetches it from the upstream registry and
-  verifies its signed checksums. Pulp answers later requests itself, even while the
-  upstream is down.
-- **Registry.** With `TOFU_REGISTRY_ENABLED`, Pulp answers OpenTofu's provider and module
-  registry protocols at its own hostname. `source = "pulp.example/acme/demo"` then needs
-  no CLI configuration.
-- **Publishing.** Namespaces accept provider releases under GoReleaser's file names, and
-  module packages. Pulp checks each release against the namespace's keyring, or signs it
-  with a Pulp signing service.
-- **Private namespaces.** Reads follow Pulp's roles. Registry tokens with `read`,
-  `update` or `publish` scope serve CI jobs and `TF_TOKEN_*` users.
+- **Pull-through mirror.** OpenTofu installs public providers through Pulp. Pulp fetches
+  each provider the first time someone asks for it, checks its publisher's signature,
+  and keeps a copy for later installs.
+- **Sync.** Fetch chosen providers and modules ahead of time, for machines with no
+  internet access.
+- **Registry.** Users write `source = "pulp.example/acme/demo"`, and `tofu init` installs
+  from Pulp with no CLI configuration on each machine.
+- **Publishing.** Release your own providers and modules to Pulp from CI. Pulp checks
+  each provider release against keys you register, or signs it for you.
+- **Private namespaces.** Only users you allow can install from a private namespace. CI
+  jobs get tokens limited to reading, updating or publishing.
 
 ```hcl
 provider_installation {

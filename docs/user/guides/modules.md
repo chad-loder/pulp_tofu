@@ -1,8 +1,5 @@
 # Publish Modules
 
-!!! warning "Tech preview"
-    Modules are a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
-
 A namespace that accepts provider releases also accepts module packages. OpenTofu
 installs them by registry address:
 

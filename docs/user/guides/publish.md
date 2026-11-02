@@ -1,8 +1,5 @@
 # Publish Providers
 
-!!! warning "Tech preview"
-    Publishing is a [tech preview](site:pulp_tofu/docs/user/learn/tech-preview/).
-
 A namespace accepts releases signed by a key in its keyring. Before Pulp serves a
 release, it verifies the signature and every archive. Once published, a version never
 changes.

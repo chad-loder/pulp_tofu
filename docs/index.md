@@ -6,10 +6,10 @@
     See
     [Beta Status](site:pulp_tofu/docs/user/learn/tech-preview/).
 
-With the `tofu` plugin, `tofu init` installs providers and modules from your Pulp
-instead of the public registry. Installs keep working when the registry is slow or
-down. Before Pulp serves a provider, it checks the provider against its publisher's
-signature. You can also publish your own providers and modules to your Pulp.
+With the `tofu` plugin, you install OpenTofu providers and modules through your own
+Pulp instance, rather than directly from the public registry. Pulp checks every
+provider against its publisher's signature before serving it. You can also publish
+your own providers and modules to Pulp.
 
 These docs assume some familiarity with [Pulp](site:/) and the
 [pulpcore documentation](site:pulpcore/).
@@ -18,7 +18,7 @@ These docs assume some familiarity with [Pulp](site:/) and the
 
 | Goal | Read |
 | --- | --- |
-| Install providers through Pulp, so `tofu init` keeps working when the public registry is down | [Mirror Providers for OpenTofu](site:pulp_tofu/docs/user/guides/mirror/) |
+| Install providers through your own Pulp instance, rather than directly from the public registry | [Mirror Providers for OpenTofu](site:pulp_tofu/docs/user/guides/mirror/) |
 | Install providers on machines with no internet access | [Sync Providers Ahead of Use](site:pulp_tofu/docs/user/guides/sync/) |
 | Write `source = "pulp.example/acme/demo"`, with no CLI configuration on each machine | [Serve Providers as a Registry](site:pulp_tofu/docs/user/guides/registry/) |
 | Release your own provider to Pulp from CI | [Publish Providers](site:pulp_tofu/docs/user/guides/publish/) |
@@ -55,4 +55,4 @@ For administrators:
 - [Differences from registry.opentofu.org](site:pulp_tofu/docs/user/learn/differences/):
   what works the same and what does not.
 - [Beta Status](site:pulp_tofu/docs/user/learn/tech-preview/): what being outside the
-  Pulp Project means, which features may still change, and changes not yet upstream.
+  Pulp Project means, and changes not yet upstream.
